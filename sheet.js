@@ -369,25 +369,43 @@ async function createTool({ toolId, description, productName }) {
   return row;
 }
 
-// Edit a die's Description/Product Name, and optionally rename its Die ID —
-// a rename cascades to every row that references this die (Parts,
-// Operations, OutsourceEntries, ChildParts), mirroring update_tool/
-// _rename_tool in app/backend/main.py.
+// Edit a die's Description/Product Name, and optionally rename its Die ID.
+// A rename cascades to every row that references this die (Parts,
+// Operations, OutsourceEntries, ChildParts) across several sheet tabs, so
+// that path (renameTool) still waits on the network — but a plain
+// Description/Product Name edit is instant, same as everywhere else: the
+// screen updates right away and the sheet write happens in the background.
 async function updateTool(toolId, { newToolId, description, productName }) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
-  const fields = {
-    ...tool,
-    Description: description != null ? description.trim() : tool.Description,
-    ProductName: productName != null ? productName.trim() : tool.ProductName,
-    CreatedAt: isoStamp(tool.CreatedAt),
-  };
 
   const newId = (newToolId || "").trim();
-  if (newId && newId !== toolId) return renameTool(toolId, newId, fields);
+  if (newId && newId !== toolId) {
+    const fields = {
+      ...tool,
+      Description: description != null ? description.trim() : tool.Description,
+      ProductName: productName != null ? productName.trim() : tool.ProductName,
+      CreatedAt: isoStamp(tool.CreatedAt),
+    };
+    return renameTool(toolId, newId, fields);
+  }
 
-  await sheetUpsert("Tools", fields, "ToolId");
-  await reloadTools();
+  const before = { ...tool };
+  if (description != null) tool.Description = description.trim();
+  if (productName != null) tool.ProductName = productName.trim();
+  saveCacheToLocalStorage();
+
+  const fields = { ...tool, CreatedAt: isoStamp(tool.CreatedAt) };
+  (async () => {
+    try {
+      await sheetUpsert("Tools", fields, "ToolId");
+    } catch (err) {
+      Object.assign(tool, before);
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save changes to Die ${toolId} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return fields;
 }
 
@@ -796,17 +814,28 @@ function stopOutsource(entryId) {
 
 // ---------- die status (Design Ready / Code Ready, per PART) ----------
 
-async function updatePartStatus(partId, { designReady, codeReady }) {
+// Instant, same as startOperation()/stopOperation(): the Y/N buttons update
+// the screen right away and sync to the Google Sheet in the background, so
+// there's nothing to wait on here.
+function updatePartStatus(partId, { designReady, codeReady }) {
   const part = findPart(partId);
   if (!part) throw new Error("Part not found");
-  const row = {
-    ...part,
-    DesignReady: designReady != null ? designReady : part.DesignReady || "N",
-    CodeReady: codeReady != null ? codeReady : part.CodeReady || "N",
-    CreatedAt: isoStamp(part.CreatedAt),
-  };
-  await sheetUpsert("Parts", row, "PartId");
-  await reloadParts();
+  const before = { ...part };
+  if (designReady != null) part.DesignReady = designReady;
+  if (codeReady != null) part.CodeReady = codeReady;
+  saveCacheToLocalStorage();
+
+  const row = { ...part, CreatedAt: isoStamp(part.CreatedAt) };
+  (async () => {
+    try {
+      await sheetUpsert("Parts", row, "PartId");
+    } catch (err) {
+      Object.assign(part, before);
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save status for part ${partId} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return row;
 }
 
@@ -841,15 +870,31 @@ async function createEmployee(name, shift, machine) {
   return row;
 }
 
-async function updateEmployee(name, { shift, machine }) {
+// Instant, same as updateTool()/updatePartStatus(): the screen updates right
+// away and the sheet write happens in the background.
+function updateEmployee(name, { shift, machine }) {
   const emp = findEmployee(name);
   if (!emp) throw new Error("Employee not found");
   const m = (machine || "").trim();
   if (!m) throw new Error("Machine is required");
   rememberCustomStage(m);
-  const row = { ...emp, Shift: shift || emp.Shift, Machine: m, CreatedAt: isoStamp(emp.CreatedAt) };
-  await sheetUpsert("Employees", row, "Name");
-  await reloadEmployees();
+
+  const before = { ...emp };
+  emp.Shift = shift || emp.Shift;
+  emp.Machine = m;
+  saveCacheToLocalStorage();
+
+  const row = { ...emp, CreatedAt: isoStamp(emp.CreatedAt) };
+  (async () => {
+    try {
+      await sheetUpsert("Employees", row, "Name");
+    } catch (err) {
+      Object.assign(emp, before);
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save changes to employee ${name} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return row;
 }
 
