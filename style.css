@@ -1,0 +1,392 @@
+/* Kolors mobile app — same visual language as the desktop dashboard
+   (app/frontend/style.css), sized up for finger taps and narrow screens. */
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  background: #f4f5f7;
+  color: #1b1f24;
+  -webkit-text-size-adjust: 100%;
+}
+
+header {
+  background: #14213d;
+  color: white;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+header .logo {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  background: white;
+  border-radius: 10px;
+  padding: 4px;
+  flex: none;
+}
+.header-text { flex: 1; min-width: 0; }
+header h1 { margin: 0 0 10px; font-size: 17px; }
+nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.lang-toggle {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  background: #22315a;
+  border-radius: 6px;
+  padding: 3px;
+  align-self: flex-start;
+}
+.lang-btn {
+  background: transparent;
+  color: #cfd8ea;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.lang-btn.active { background: #fca311; color: #14213d; }
+
+.logout-btn {
+  background: transparent;
+  border: 1px solid #cfd8ea;
+  color: #cfd8ea;
+  margin-left: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.tab-btn {
+  background: #22315a;
+  color: #cfd8ea;
+  border: none;
+  padding: 12px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.tab-btn.active { background: #fca311; color: #14213d; font-weight: 700; }
+
+/* New Die / Add Parts: Add a New Die / Edit Existing Die switch — same look
+   as the header's .tab-btn (dark pill, orange when active), own class so it
+   doesn't get swept into the header nav's tab-switching click handler. */
+.newtool-mode-nav { margin-bottom: 8px; }
+.newtool-mode-btn {
+  background: #22315a;
+  color: #cfd8ea;
+  border: none;
+  padding: 12px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.newtool-mode-btn.active { background: #fca311; color: #14213d; font-weight: 700; }
+
+main { padding: 16px; max-width: 1400px; margin: 0 auto; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+.card {
+  background: white;
+  border-radius: 10px;
+  padding: 18px;
+  margin-bottom: 18px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+.card h2 { margin-top: 0; font-size: 16px; }
+.card h3 {
+  font-size: 13px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  margin: 6px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid #eee;
+}
+.card h3:first-of-type { margin-top: 0; padding-top: 0; border-top: none; }
+.card[hidden] { display: none; } /* .card's own display:flex otherwise beats the UA [hidden] rule */
+
+.banner { margin: 0 0 12px; }
+.banner.empty { display: none; }
+
+/* ---------- admin login ---------- */
+.login-gate {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 55vh;
+}
+.login-gate[hidden] { display: none; }
+/* Overlay the language toggle in the corner instead of letting it sit as a
+   flex sibling next to the centered .login-box (which would push the box
+   off-center or wrap awkwardly on narrow screens). */
+.login-gate .lang-toggle { position: absolute; top: 16px; right: 16px; align-self: auto; }
+.login-box {
+  width: 300px;
+  max-width: 100%;
+  background: white;
+  border-radius: 10px;
+  padding: 28px 24px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.login-box h2 { margin: 0 0 4px; font-size: 17px; text-align: center; }
+.back-btn { background: #888; }
+.login-box .back-btn { margin-top: 4px; }
+
+.role-box { width: 300px; }
+.role-btn { padding: 22px 16px; font-size: 18px; font-weight: 700; background: #14213d; }
+.role-btn:active { background: #22315a; }
+
+/* ---------- forms ---------- */
+form, .card { display: flex; flex-direction: column; gap: 10px; }
+label { display: flex; flex-direction: column; font-size: 13px; font-weight: 600; color: #444; gap: 4px; }
+label[hidden] { display: none; } /* label's own display:flex otherwise beats the UA [hidden] rule */
+input, select {
+  font-size: 16px; /* 16px stops mobile browsers zooming in on focus */
+  padding: 12px 10px;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  width: 100%;
+}
+button {
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 13px 16px;
+  font-size: 15px;
+  background: #14213d;
+  color: white;
+  -webkit-tap-highlight-color: transparent;
+}
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:active { transform: scale(0.98); }
+
+.actions { display: flex; gap: 12px; margin-top: 8px; flex-wrap: wrap; }
+.actions button { flex: 1 1 auto; }
+.big-btn { flex: 1; font-size: 19px; padding: 20px; font-weight: 700; border-radius: 10px; }
+.big-btn.start { background: #2a9d8f; }
+.danger { background: #e63946; }
+
+.msg { min-height: 20px; font-size: 14px; color: #b3261e; font-weight: 600; }
+.msg.ok { color: #2a9d8f; }
+
+/* ---------- tables ---------- */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; white-space: nowrap; }
+th { color: #666; font-size: 12px; text-transform: uppercase; }
+
+#open-table, #matrix-table { font-size: 13px; }
+#open-table th, #open-table td,
+#matrix-table th, #matrix-table td { padding: 7px 8px; }
+
+.status-cell.pending { color: #888; }
+.status-cell.working { background: #fff3cd; color: #8a6500; font-weight: 700; }
+.status-cell.waiting { background: #ffe1c2; color: #9a4d0a; font-weight: 700; }
+.status-cell.done { background: #d1f0e6; color: #146b53; font-weight: 700; }
+.status-cell.empty { background: transparent; }
+
+.task-popover {
+  position: fixed;
+  z-index: 1000;
+  background: #14213d;
+  color: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  min-width: 140px;
+}
+.task-popover p { margin: 0 0 8px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.task-popover-actions { display: flex; gap: 8px; }
+.task-popover-actions button {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 14px;
+  color: #fff;
+}
+.task-yes-btn { background: #2a9d8f; }
+.task-no-btn { background: #e63946; }
+
+.row-actions { display: flex; gap: 6px; white-space: nowrap; }
+.row-actions button { padding: 8px 12px; font-size: 13px; }
+.edit-part-btn, .edit-employee-btn { background: #457b9d; }
+.delete-part-btn, .delete-employee-btn { background: #e63946; }
+.stop-entry-btn { background: #e63946; padding: 8px 16px; font-size: 13px; }
+#part-cancel-edit-btn, #employee-cancel-edit-btn { background: #888; }
+
+#track-result { margin-top: 16px; }
+#track-result h3 { font-size: 15px; }
+
+/* ---------- Entry page sub-tabs (Add Entry / Work Progress) ---------- */
+.sub-tab-nav { display: flex; gap: 8px; margin-bottom: 16px; }
+.sub-tab-btn {
+  background: #e9ebf0;
+  color: #444;
+  padding: 10px 18px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.sub-tab-btn.active { background: #14213d; color: #fff; }
+.sub-tab-panel { display: none; }
+.sub-tab-panel.active { display: block; }
+.hint { font-size: 13px; color: #666; margin: -6px 0 8px; }
+
+/* ---------- Add Entry wizard ---------- */
+.wizard-nav { flex-direction: row; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.wizard-nav button { background: #22315a; flex: 0 0 auto; }
+.breadcrumb { font-size: 13px; color: #666; font-weight: 700; }
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+.kpi-card {
+  background: #f7f7f9;
+  border: 2px solid #d7dae2;
+  border-radius: 12px;
+  padding: 30px 14px;
+  min-height: 116px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 18px;
+  word-break: break-word;
+  -webkit-tap-highlight-color: transparent;
+}
+.kpi-card:active { transform: scale(0.98); }
+.kpi-card small { display: block; font-weight: 400; color: #666; margin-top: 6px; font-size: 12px; }
+.kpi-card.pending { background: #eee; border-color: #cfd2d8; }
+.kpi-card.working { background: #fff3cd; border-color: #e6c565; }
+.kpi-card.waiting { background: #ffe1c2; border-color: #f0ad4e; }
+.kpi-card.done { background: #d1f0e6; border-color: #8fd0b8; }
+.kpi-card.disabled { cursor: not-allowed; opacity: 0.6; }
+.kpi-card.disabled:active { transform: none; }
+.kpi-card.selected { border-color: #fca311; border-width: 3px; background: #fff7ea; }
+.kpi-card.other-tile { border-style: dashed; color: #666; }
+
+.part-employee-columns { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+.part-employee-columns .part-column { flex: 3 1 440px; min-width: 0; }
+.part-employee-columns .employee-column { flex: 0 0 240px; }
+.part-employee-columns h3 { font-size: 13px; color: #666; text-transform: uppercase; margin: 0 0 8px; }
+
+/* Employee list: compact rows, not big boxes */
+.employee-list { display: flex; flex-direction: column; gap: 8px; }
+.employee-list .kpi-card {
+  align-items: flex-start;
+  text-align: left;
+  padding: 12px 14px;
+  min-height: auto;
+  font-size: 15px;
+  border-radius: 8px;
+}
+.employee-list .kpi-card small { margin-top: 2px; font-size: 11px; }
+
+.other-input-row { flex-direction: row; align-items: flex-end; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+.other-input-row label { flex: 1 1 200px; max-width: 320px; }
+
+/* ---------- Add Plates: checkbox grid + custom-name chip queue ---------- */
+.plate-checkbox-grid { display: flex; flex-wrap: wrap; gap: 10px 28px; margin-top: 4px; }
+.plate-checkbox-grid label {
+  flex: 0 1 auto;
+  white-space: nowrap;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
+  font-size: 14px;
+  color: #1b1f24;
+}
+.plate-checkbox-grid input[type="checkbox"] { width: 20px; height: 20px; }
+
+.chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #e9ebf0;
+  border-radius: 14px;
+  padding: 5px 8px 5px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.chip button {
+  background: #cfd2d8;
+  color: #1b1f24;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ---------- Parts / Child Parts inline-edit inputs ---------- */
+#part-table input[type="text"],
+#part-table input[type="number"],
+#child-parts-table input[type="text"],
+#child-parts-table input[type="number"] {
+  min-width: 90px;
+  max-width: 320px;
+  font-size: 14px;
+  padding: 8px 8px;
+}
+#part-table td, #child-parts-table td { vertical-align: top; }
+
+/* Child Parts only has Name/Qty/Delete columns — a 100%-wide table (the
+   default) stretches Name across the whole card and shoves Qty/Delete off
+   to the far right. Let the table shrink to its content instead, with
+   fixed-width inputs, so the three columns sit together on the left. */
+#child-parts-table { width: auto; }
+#child-parts-table input[type="text"] { width: 220px; max-width: 100%; }
+#child-parts-table input[type="number"] { width: 90px; max-width: 100%; }
+
+/* ---------- Die Status: Y/N toggle buttons ---------- */
+/* inline-flex on a <span> inside a plain <td>, not on the <td> itself —
+   display:flex directly on a table cell can throw off table-layout:auto's
+   column measurement in some engines. */
+.ready-toggle { display: inline-flex; gap: 6px; }
+.ready-btn {
+  width: 44px;
+  padding: 8px 0;
+  font-size: 14px;
+  font-weight: 700;
+  background: #e9ebf0;
+  color: #666;
+}
+.ready-btn.selected.y { background: #2a9d8f; color: #fff; }
+.ready-btn.selected.n { background: #e63946; color: #fff; }
+
+/* Die Status and Employees have few, short columns — a full-width table
+   (the default) spreads them out with a large empty gap before the last
+   column(s); shrink the table to its content so they sit together instead. */
+#die-status-table, #employee-table { width: auto; }
+#die-status-table td:nth-child(3), #die-status-table td:nth-child(4) { padding-left: 20px; }
+
+.status-cell.outsource { background: #cfe8ff; color: #0b5394; font-weight: 700; }
+
+/* ---------- narrow screens (phones / portrait tablets) ---------- */
+@media (max-width: 820px) {
+  header { flex-wrap: wrap; }
+  header h1 { font-size: 15px; }
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .kpi-card { padding: 24px 10px; min-height: 100px; font-size: 16px; }
+  .part-employee-columns .employee-column { flex: 1 1 100%; }
+  .employee-list { flex-direction: row; flex-wrap: wrap; }
+  .employee-list .kpi-card { flex: 1 1 130px; }
+  .tab-btn { flex: 1 1 auto; padding: 12px 8px; font-size: 13px; }
+}

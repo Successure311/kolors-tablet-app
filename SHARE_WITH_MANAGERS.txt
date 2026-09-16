@@ -1,0 +1,119 @@
+KOLORS — LETTING SELECTED PEOPLE WATCH THE ENTRIES LIVE
+========================================================
+
+There are two ways. Read the comparison, pick one, then follow those steps.
+
+                          OPTION 1                 OPTION 2
+                          Share the master         Separate view-only sheet
+  --------------------------------------------------------------------------
+  How fast                Instant                  Near-live (see note below)
+  They can see            Every tab                Only the entries
+  Admin password risk     Must be hidden by you    None - not in that file
+  Risk they break the app Low (Viewer only)        None
+  Setup time              2 minutes                10 minutes
+
+  Note on Option 2: Google refreshes an IMPORTRANGE roughly every 30 minutes
+  on its own. Pressing F5 / reloading the page pulls the latest immediately.
+  So it is "live enough" for a manager checking in, but not for a shop-floor
+  screen you want ticking in real time.
+
+Choose Option 1 if they need to see entries the second they happen.
+Choose Option 2 if you would rather they never had the master file at all.
+
+
+===========================================================================
+OPTION 1 - SHARE THE MASTER SHEET (read-only)
+===========================================================================
+
+Step 1 - hide the Admin tab FIRST
+    The Admin tab contains your login ID and password in plain text.
+    1. At the bottom of the sheet, right-click the tab named  Admin .
+    2. Click  Hide sheet .
+    Viewers cannot unhide it. (You can: View > Show > Admin.)
+
+Step 2 - share it
+    1. Click  Share  (top right).
+    2. Type the person's Gmail address.
+    3. IMPORTANT: change the role dropdown from  Editor  to  Viewer .
+    4. Repeat for each person.
+    5. Click  Share .
+
+Step 3 - block downloading
+    A download (File > Download > Excel) would include the hidden Admin tab.
+    1. Click  Share  again.
+    2. Click the  gear icon  at the top right of the Share box.
+    3. UNTICK "Viewers and commenters can see the option to download, print
+       and copy".
+    4. Click  Done .
+
+    *** Never give anyone Editor access. ***
+    An editor who renames a column heading, or drags a row, breaks the app on
+    every tablet - the script matches data by column name. Viewer lets them
+    see everything and sort/filter their own view without changing anything.
+
+    Also do NOT use "Anyone with the link". The sheet holds your whole
+    production history.
+
+
+===========================================================================
+OPTION 2 - A SEPARATE VIEW-ONLY SHEET
+===========================================================================
+They get a file containing nothing but the entries. No Admin tab, no Tools,
+no Parts, and no way to affect the real data.
+
+ 1. Go to    https://sheets.new     (makes a new blank spreadsheet)
+
+ 2. Name it (click "Untitled spreadsheet" top left):
+        Kolors - Live Entries
+
+ 3. Rename the tab at the bottom from "Sheet1" to:
+        Entries
+
+ 4. Click cell  A1  and paste this in EXACTLY, then press Enter:
+
+=IMPORTRANGE("https://docs.google.com/spreadsheets/d/1Fl7uV1_U8iKLcp8X7AFxwwqNR3pgoHvP94L-XRsnBuI/edit","Operations!A:L")
+
+    (A:L is the 12 columns from Die ID to Status. The 13th column, Id, is an
+     internal reference number - there is no reason for anyone to see it.)
+
+ 5. The cell will show  #REF!  . That is expected.
+    Click the cell once. A small box appears saying "You need to connect
+    these sheets".  Click  Allow access .
+
+ 6. Wait a few seconds. All your entries appear. From now on this sheet
+    follows the master on its own - you never touch it again.
+
+ 7. Colour the Status column (optional, matches the dashboard):
+    a. Click the column letter  L  to select the Status column.
+    b. Format > Conditional formatting.
+    c. Format rules: "Text is exactly"  ->  Working
+       Formatting style: yellow fill.  Click  Done .
+    d. Click  + Add another rule .
+       "Text is exactly"  ->  Done
+       Formatting style: green fill.  Click  Done .
+
+ 8. Freeze the heading row so it stays visible while scrolling:
+        View > Freeze > 1 row
+
+ 9. Share it:
+    a. Click  Share  (top right).
+    b. Add each person's Gmail address.
+    c. Change the role from  Editor  to  Viewer .
+    d. Click  Share .
+
+10. Do NOT share the master sheet with these people. This new file is all
+    they need.
+
+    If someone says the numbers look old: tell them to press F5 to reload.
+    That forces Google to fetch the latest rows.
+
+
+===========================================================================
+ABOUT THE ADMIN PASSWORD
+===========================================================================
+The password (Kolors / 1234) is written into the sheet's Admin tab by the
+desktop dashboard every time it starts up. So editing it in the sheet does
+NOT change it - the dashboard puts 1234 back on the next restart.
+
+To really change it, the dashboard's code has to be edited too. Ask for that
+if you want a proper password.

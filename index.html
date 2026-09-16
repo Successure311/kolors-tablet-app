@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Kolors Entry</title>
+  <link rel="icon" href="kolors.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#14213d" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- ===== Step 1: choose Admin or Workshop ===== -->
+  <div id="role-select" class="login-gate">
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button type="button" class="lang-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" data-lang="hi">हिं</button>
+    </div>
+    <div class="login-box role-box">
+      <h2 data-i18n="role.title">Select Login Type</h2>
+      <button type="button" class="role-btn" id="role-admin-btn" data-i18n="role.admin">Admin</button>
+      <button type="button" class="role-btn" id="role-workshop-btn" data-i18n="role.workshop">Workshop</button>
+    </div>
+  </div>
+
+  <!-- ===== Step 2a: Admin login ===== -->
+  <div id="admin-login" class="login-gate" hidden>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button type="button" class="lang-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" data-lang="hi">हिं</button>
+    </div>
+    <div class="login-box">
+      <h2 data-i18n="login.title">Admin Login</h2>
+      <label><span data-i18n="login.idLabel">Login ID</span> <input id="admin-login-id" data-i18n-placeholder="login.idPlaceholder" placeholder="Login ID" autocomplete="off" /></label>
+      <label><span data-i18n="login.passwordLabel">Password</span> <input id="admin-login-password" type="password" data-i18n-placeholder="login.passwordPlaceholder" placeholder="Password" autocomplete="off" /></label>
+      <button id="admin-login-btn" type="button" data-i18n="login.button">Login</button>
+      <p id="admin-login-msg" class="msg"></p>
+      <button type="button" class="back-btn" id="admin-login-back-btn" data-i18n="role.back">◀ Back</button>
+    </div>
+  </div>
+
+  <!-- ===== Step 2b: Workshop login ===== -->
+  <div id="workshop-login" class="login-gate" hidden>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button type="button" class="lang-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" data-lang="hi">हिं</button>
+    </div>
+    <div class="login-box">
+      <h2 data-i18n="workshopLogin.title">Workshop Login</h2>
+      <label><span data-i18n="login.idLabel">Login ID</span> <input id="workshop-login-id" data-i18n-placeholder="login.idPlaceholder" placeholder="Login ID" autocomplete="off" /></label>
+      <label><span data-i18n="login.passwordLabel">Password</span> <input id="workshop-login-password" type="password" data-i18n-placeholder="login.passwordPlaceholder" placeholder="Password" autocomplete="off" /></label>
+      <button id="workshop-login-btn" type="button" data-i18n="login.button">Login</button>
+      <p id="workshop-login-msg" class="msg"></p>
+      <button type="button" class="back-btn" id="workshop-login-back-btn" data-i18n="role.back">◀ Back</button>
+    </div>
+  </div>
+
+  <!-- ===== The app itself, shown only after a successful login ===== -->
+  <div id="app-shell" hidden>
+  <header>
+    <img src="kolors.png" alt="Kolors" class="logo" />
+    <div class="header-text">
+      <h1 data-i18n="app.title">Kolors — Die / Tool Tracking</h1>
+      <nav>
+        <button class="tab-btn" data-tab="newtool" data-i18n="nav.newDie">New Die / Add Parts</button>
+        <button class="tab-btn active" data-tab="startstop" data-i18n="nav.entry">Entry</button>
+        <button class="tab-btn" data-tab="track" data-i18n="nav.track">Track a Die</button>
+      </nav>
+    </div>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button type="button" class="lang-btn active" id="lang-en-btn" data-lang="en">EN</button>
+      <button type="button" class="lang-btn" id="lang-hi-btn" data-lang="hi">हिं</button>
+      <button type="button" class="logout-btn" id="logout-btn" data-i18n="role.logout">Logout</button>
+    </div>
+  </header>
+
+  <main>
+    <p id="global-msg" class="msg banner"></p>
+
+    <!-- ===== New Die / Add Parts (admin only) ===== -->
+    <section id="newtool" class="tab-panel">
+      <div class="actions newtool-mode-nav">
+        <button type="button" class="newtool-mode-btn" data-mode="add" data-i18n="newToolSubtab.add">Add a New Die</button>
+        <button type="button" class="newtool-mode-btn" data-mode="edit" data-i18n="newToolSubtab.edit">Edit Existing Die</button>
+      </div>
+
+      <!-- ----- Add a New Die: create, then populate its plates/parts/child parts ----- -->
+      <div id="newtool-add" hidden>
+        <div class="card">
+          <h2 data-i18n="tool.heading">Add a New Die</h2>
+          <form id="tool-form">
+            <label><span data-i18n="tool.idLabel">Die ID</span> <input name="tool_id" data-i18n-placeholder="tool.idPlaceholder" placeholder="e.g. PT-170" required /></label>
+            <label><span data-i18n="tool.descLabel">Description</span> <input name="description" data-i18n-placeholder="tool.descPlaceholder" placeholder="e.g. KLICK SPN Plastic Door 4 Way Knockout Tool" required /></label>
+            <label><span data-i18n="tool.productLabel">Product Name</span> <input name="product_name" data-i18n-placeholder="tool.productPlaceholder" placeholder="optional" /></label>
+            <button type="submit" data-i18n="tool.addButton">Add Die</button>
+          </form>
+          <p id="tool-msg" class="msg"></p>
+        </div>
+
+        <div id="add-die-parts-mount"></div>
+        <div id="add-die-employee-mount"></div>
+      </div>
+
+      <!-- ----- Edit Existing Die: pick a die, then everything about it ----- -->
+      <div id="newtool-edit" hidden>
+        <div id="edit-die-parts-mount"></div>
+
+        <div class="card" id="die-status-card" hidden>
+          <h2 data-i18n="dieStatus.heading">Die Status</h2>
+          <label><span data-i18n="dieStatus.selectDie">Select Die</span>
+            <select id="die-status-tool-select"></select>
+          </label>
+          <div class="table-scroll">
+            <table id="die-status-table">
+              <thead><tr>
+                <th data-i18n="dieStatus.thPlate">Plate</th><th data-i18n="dieStatus.thPartId">Part ID</th>
+                <th data-i18n="dieStatus.thDesignReady">Design Ready</th><th data-i18n="dieStatus.thCodeReady">Code Ready</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="die-status-msg" class="msg"></p>
+        </div>
+
+        <div id="edit-die-employee-form-mount"></div>
+        <div class="card">
+          <h2 data-i18n="employees.listHeading">Employees</h2>
+          <div class="table-scroll">
+            <table id="employee-table">
+              <thead><tr>
+                <th data-i18n="employees.thName">Name</th><th data-i18n="employees.thMachine">Machine</th>
+                <th data-i18n="employees.thShift">Shift</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="employee-table-msg" class="msg"></p>
+        </div>
+      </div>
+
+      <!-- Shared: Select Die / Edit-Delete Die / Add Plates / Parts / Child
+           Parts. One physical copy — JS re-parents it into add-die-parts-mount
+           or edit-die-parts-mount depending on which option above is active. -->
+      <div class="card" id="parts-card" hidden>
+        <h2 data-i18n="parts.heading">Add / Edit Parts</h2>
+        <div id="select-die-row">
+          <label><span data-i18n="parts.selectDie">Select Die</span>
+            <select id="part-tool-select"></select>
+          </label>
+        </div>
+
+        <div id="edit-die-controls" hidden>
+          <div class="actions">
+            <button type="button" id="edit-die-btn" data-i18n="tool.editButton">Edit Die</button>
+            <button type="button" id="delete-die-btn" class="danger" data-i18n="tool.deleteButton">Delete Die</button>
+          </div>
+          <div id="edit-die-fields" hidden>
+            <label><span data-i18n="tool.idLabel">Die ID</span> <input id="edit-die-id" /></label>
+            <label><span data-i18n="tool.descLabel">Description</span> <input id="edit-die-description" /></label>
+            <label><span data-i18n="tool.productLabel">Product Name</span> <input id="edit-die-product" data-i18n-placeholder="tool.productPlaceholder" placeholder="optional" /></label>
+            <div class="actions">
+              <button type="button" id="save-die-btn" data-i18n="tool.saveButton">Save</button>
+              <button type="button" id="cancel-edit-die-btn" data-i18n="tool.cancelButton">Cancel</button>
+            </div>
+          </div>
+          <p id="edit-die-msg" class="msg"></p>
+        </div>
+
+        <div id="parts-content" hidden>
+          <h3 data-i18n="parts.addPlatesHeading">Add Plates</h3>
+          <div id="plate-checkbox-grid" class="plate-checkbox-grid"></div>
+          <div class="other-input-row">
+            <label><span data-i18n="parts.plateOtherLabel">Plate Name (Other)</span>
+              <input id="plate-other-input" data-i18n-placeholder="parts.plateOtherPlaceholder" placeholder="Type plate name" />
+            </label>
+            <button type="button" id="plate-other-add-btn" data-i18n="parts.addToListButton">Add to list</button>
+          </div>
+          <div id="plate-custom-list" class="chip-list"></div>
+          <div class="actions">
+            <button type="button" id="add-plates-btn" data-i18n="parts.addPlatesButton">Add Selected Plates</button>
+          </div>
+          <p id="plate-msg" class="msg"></p>
+
+          <h3 data-i18n="parts.partsTableHeading">Parts</h3>
+          <div class="table-scroll">
+            <table id="part-table">
+              <thead><tr>
+                <th data-i18n="parts.thPlate">Plate</th><th data-i18n="parts.thPartId">Part ID</th>
+                <th data-i18n="parts.thMaterial">Material</th><th data-i18n="parts.thRoughSize">Rough Size</th>
+                <th data-i18n="parts.thQty">Qty</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button type="button" id="save-parts-btn" data-i18n="parts.saveAllButton">Save All</button>
+          </div>
+          <p id="part-msg" class="msg"></p>
+
+          <h3 data-i18n="childParts.heading">Child Parts</h3>
+          <p class="hint" data-i18n="childParts.hint">Upload one CSV or Excel file for the selected die above — first row must be a header, columns: Child Part Name, Qty.</p>
+          <div class="actions">
+            <input type="file" id="child-parts-file-input" accept=".csv,.xlsx,.xlsm" hidden />
+            <button type="button" id="child-parts-upload-btn" data-i18n="childParts.uploadButton">Upload CSV/Excel</button>
+          </div>
+          <div class="table-scroll">
+            <table id="child-parts-table">
+              <thead><tr>
+                <th data-i18n="childParts.thChildName">Child Part</th><th data-i18n="childParts.thQty">Qty</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button type="button" id="save-child-parts-btn" data-i18n="childParts.saveButton">Save Child Parts</button>
+          </div>
+          <p id="child-parts-msg" class="msg"></p>
+        </div>
+      </div>
+
+      <!-- Shared: the Add/Edit Employee form. One physical copy, hidden by
+           default — JS moves it into add-die-employee-mount (always shown
+           there) or edit-die-employee-form-mount (only while actively
+           editing one employee, via its row's Edit button). -->
+      <div class="card" id="employee-form-card" hidden>
+        <h2 data-i18n="employees.heading">Manage Employees</h2>
+        <form id="employee-form">
+          <input type="hidden" name="editing_name" />
+          <label><span data-i18n="employees.nameLabel">Employee Name</span> <input name="name" id="employee-name-input" required /></label>
+          <label><span data-i18n="employees.shiftLabel">Shift</span>
+            <select name="shift" id="employee-shift-select"></select>
+          </label>
+          <label><span data-i18n="employees.machineLabel">Machine</span>
+            <select name="machine" id="employee-machine-select"></select>
+          </label>
+          <label id="employee-machine-other-wrap" hidden><span data-i18n="employees.machineOtherLabel">Machine Name (Other)</span>
+            <input name="machine_other" id="employee-machine-other" data-i18n-placeholder="employees.machineOtherPlaceholder" placeholder="Type machine/department name" />
+          </label>
+          <div class="actions">
+            <button type="submit" id="employee-submit-btn" data-i18n="employees.addButton">Add Employee</button>
+            <button type="button" id="employee-cancel-edit-btn" hidden data-i18n="employees.cancelButton">Cancel</button>
+          </div>
+        </form>
+        <p id="employee-msg" class="msg"></p>
+      </div>
+    </section>
+
+    <!-- ===== Entry (Add Entry / Work Progress) ===== -->
+    <section id="startstop" class="tab-panel active">
+      <div class="sub-tab-nav">
+        <button class="sub-tab-btn active" data-subtab="entry-add" data-i18n="entrySubtab.add">Add Entry</button>
+        <button class="sub-tab-btn" data-subtab="entry-progress" data-i18n="entrySubtab.progress">Work Progress</button>
+      </div>
+
+      <!-- ----- Add Entry: Department -> Die -> Part + Employee -> Start ----- -->
+      <div id="entry-add" class="sub-tab-panel active">
+        <div class="card">
+          <div class="wizard-nav">
+            <button id="wiz-home-btn" type="button" data-i18n="wizard.home">🏠 Home</button>
+            <button id="wiz-prev-btn" type="button" data-i18n="wizard.previous">◀ Previous</button>
+            <button id="wiz-next-btn" type="button" data-i18n="wizard.next">Next ▶</button>
+            <span id="wiz-breadcrumb" class="breadcrumb"></span>
+          </div>
+
+          <!-- Step 1: Department -->
+          <div id="wiz-step-department" class="wiz-step">
+            <h2 data-i18n="wizard.selectMachine">Select Machine</h2>
+            <div id="dept-grid" class="kpi-grid"></div>
+            <div id="dept-other-wrap" class="other-input-row" hidden>
+              <label><span data-i18n="wizard.deptNameLabel">Department Name</span>
+                <input id="dept-other-input" data-i18n-placeholder="wizard.deptNamePlaceholder" placeholder="Type department name" />
+              </label>
+              <button type="button" id="dept-other-continue-btn" data-i18n="wizard.continue">Continue ▶</button>
+            </div>
+          </div>
+
+          <!-- Step 2: Die -->
+          <div id="wiz-step-die" class="wiz-step" hidden>
+            <h2><span data-i18n="wizard.selectDiePrefix">Select Die — </span><span id="wiz-dept-label"></span></h2>
+            <div id="die-grid" class="kpi-grid"></div>
+          </div>
+
+          <!-- Step 3: Part + Employee -->
+          <div id="wiz-step-part" class="wiz-step" hidden>
+            <h2><span id="wiz-die-label"></span> — <span id="wiz-dept-label-2"></span></h2>
+            <div class="part-employee-columns">
+              <div class="column part-column">
+                <h3 data-i18n="wizard.partHeading">Part</h3>
+                <div id="part-grid" class="kpi-grid"></div>
+              </div>
+              <div class="column employee-column">
+                <h3 data-i18n="wizard.employeeHeading">Employee</h3>
+                <div id="employee-grid" class="employee-list"></div>
+              </div>
+            </div>
+            <div class="actions">
+              <button id="ss-start-btn" class="big-btn start" disabled data-i18n="wizard.startButton">Start</button>
+            </div>
+            <p id="ss-msg" class="msg"></p>
+          </div>
+
+          <!-- Step OutSource: Die -> Part -> Process/Place/Duration -->
+          <div id="wiz-step-outsource" class="wiz-step" hidden>
+            <h2 data-i18n="outsource.heading">Send Part for OutSource</h2>
+            <form id="os-form">
+              <label><span data-i18n="outsource.selectDie">Select Die</span>
+                <select id="os-tool-select"></select>
+              </label>
+              <label><span data-i18n="outsource.selectPart">Select Part</span>
+                <select id="os-part-select"></select>
+              </label>
+              <label><span data-i18n="outsource.processLabel">Process</span>
+                <input id="os-process-input" data-i18n-placeholder="outsource.processPlaceholder" placeholder="e.g. Plating" />
+              </label>
+              <label><span data-i18n="outsource.placeLabel">Place</span>
+                <input id="os-place-input" data-i18n-placeholder="outsource.placePlaceholder" placeholder="e.g. ABC Plating Works" />
+              </label>
+              <label><span data-i18n="outsource.durationLabel">Estimated Duration</span>
+                <input id="os-duration-input" data-i18n-placeholder="outsource.durationPlaceholder" placeholder="e.g. 7 days" />
+              </label>
+              <button type="submit" id="os-add-btn" data-i18n="outsource.addButton">Add Entry</button>
+            </form>
+            <p id="os-msg" class="msg"></p>
+
+            <h3 data-i18n="outsource.tableHeading">OutSource Entries</h3>
+            <div class="actions">
+              <button type="button" id="os-refresh-btn" data-i18n="entries.refresh">Refresh</button>
+              <button type="button" id="os-reset-btn" class="danger" data-i18n="entries.reset">Reset All Entries (start fresh)</button>
+            </div>
+            <p id="os-reset-msg" class="msg"></p>
+            <div class="table-scroll">
+              <table id="os-table">
+                <thead><tr>
+                  <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                  <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
+                  <th data-i18n="outsource.thProcess">Process</th><th data-i18n="outsource.thPlace">Place</th>
+                  <th data-i18n="outsource.thDuration">Duration</th>
+                  <th data-i18n="entries.thStartDate">Start Date</th><th data-i18n="entries.thStartTime">Start Time</th>
+                  <th data-i18n="entries.thEndDate">End Date</th><th data-i18n="entries.thEndTime">End Time</th>
+                  <th data-i18n="entries.thStatus">Status</th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" id="entry-add-entries-card">
+          <h2 data-i18n="entries.heading">Entries</h2>
+          <div class="actions">
+            <button id="refresh-open-btn-add" data-i18n="entries.refresh">Refresh</button>
+            <button id="reset-entries-btn-add" class="danger" data-i18n="entries.reset">Reset All Entries (start fresh)</button>
+          </div>
+          <p id="reset-msg-add" class="msg"></p>
+          <div class="table-scroll">
+            <table id="open-table-add">
+              <thead><tr>
+                <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
+                <th data-i18n="entries.thDepartment">Department</th><th data-i18n="entries.thOperator">Operator</th>
+                <th data-i18n="entries.thStartDate">Start Date</th><th data-i18n="entries.thStartTime">Start Time</th>
+                <th data-i18n="entries.thEndDate">End Date</th><th data-i18n="entries.thEndTime">End Time</th>
+                <th data-i18n="entries.thShift">Shift</th><th data-i18n="entries.thStatus">Status</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ----- Work Progress: Department -> Employee -> View, then Stop -----
+           Same step-by-step shape as Add Entry, on purpose — pick Department
+           first, then only the employees fixed to that machine, then View. -->
+      <div id="entry-progress" class="sub-tab-panel" hidden>
+        <div class="card">
+          <div class="wizard-nav">
+            <button id="wp-home-btn" type="button" data-i18n="wizard.home">🏠 Home</button>
+            <button id="wp-prev-btn" type="button" data-i18n="wizard.previous">◀ Previous</button>
+            <span id="wp-breadcrumb" class="breadcrumb"></span>
+          </div>
+
+          <!-- Step 1: Department -->
+          <div id="wp-step-department" class="wiz-step">
+            <h2 data-i18n="wizard.selectMachine">Select Machine</h2>
+            <div id="wp-dept-grid" class="kpi-grid"></div>
+          </div>
+
+          <!-- Step 2: Employee -->
+          <div id="wp-step-employee" class="wiz-step" hidden>
+            <h2><span data-i18n="wp.selectEmployeePrefix">Select Employee — </span><span id="wp-dept-label"></span></h2>
+            <div id="wp-emp-grid" class="kpi-grid"></div>
+            <div class="actions">
+              <button id="wp-view-btn" class="big-btn start" disabled data-i18n="wp.view">View</button>
+            </div>
+          </div>
+
+          <!-- Step OutSource: currently-out parts, Mark Returned -->
+          <div id="wp-step-outsource" class="wiz-step" hidden>
+            <h2 data-i18n="outsource.heading">OutSource</h2>
+            <div class="actions">
+              <button type="button" id="wp-os-refresh-btn" data-i18n="entries.refresh">Refresh</button>
+              <button type="button" id="wp-os-reset-btn" class="danger" data-i18n="entries.reset">Reset All Entries (start fresh)</button>
+            </div>
+            <p id="wp-os-reset-msg" class="msg"></p>
+            <div class="table-scroll">
+              <table id="wp-os-table">
+                <thead><tr>
+                  <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                  <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
+                  <th data-i18n="outsource.thProcess">Process</th><th data-i18n="outsource.thPlace">Place</th>
+                  <th data-i18n="outsource.thDuration">Duration</th>
+                  <th data-i18n="entries.thStartDate">Start Date</th><th data-i18n="entries.thStartTime">Start Time</th>
+                  <th data-i18n="entries.thStatus">Status</th><th></th>
+                </tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p id="wp-os-msg" class="msg"></p>
+          </div>
+        </div>
+
+        <div class="card" id="wp-results-card" hidden>
+          <h2 data-i18n="entries.heading">Entries</h2>
+          <div class="actions">
+            <button id="refresh-open-btn" data-i18n="entries.refresh">Refresh</button>
+            <button id="reset-entries-btn" class="danger" data-i18n="entries.reset">Reset All Entries (start fresh)</button>
+          </div>
+          <p id="reset-msg" class="msg"></p>
+          <p id="wp-msg" class="msg"></p>
+          <div class="table-scroll">
+            <table id="open-table">
+              <thead><tr>
+                <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
+                <th data-i18n="entries.thDepartment">Department</th><th data-i18n="entries.thOperator">Operator</th>
+                <th data-i18n="entries.thStartDate">Start Date</th><th data-i18n="entries.thStartTime">Start Time</th>
+                <th data-i18n="entries.thEndDate">End Date</th><th data-i18n="entries.thEndTime">End Time</th>
+                <th data-i18n="entries.thShift">Shift</th><th data-i18n="entries.thStatus">Status</th><th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Track a Die ===== -->
+    <section id="track" class="tab-panel">
+      <div class="card">
+        <h2 data-i18n="track.heading">Track a Die</h2>
+        <label><span data-i18n="track.dieIdLabel">Die ID</span>
+          <select id="track-tool-id"></select>
+        </label>
+        <button id="track-btn" data-i18n="track.showStatus">Show Status</button>
+        <div id="track-result"></div>
+      </div>
+    </section>
+
+  </main>
+  </div>
+
+  <script src="vendor/xlsx.mini.min.js"></script>
+  <script src="i18n.js"></script>
+  <script src="sheet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+KOLORS MOBILE APP — CLOUDFLARE PAGES (backup host)
+====================================================
+
+This is an ALTERNATE free host for the same app that's on Netlify. It is not
+a replacement — Netlify stays the main URL you give to tablets unless you
+decide otherwise. Both hosts read and write the same Google Sheet, so it
+does not matter which URL a tablet uses; entries show up on both.
+
+Live URL:  https://kolors.pages.dev
+
+
+===========================================================
+FIRST-TIME SETUP (already done — for reference only)
+===========================================================
+1. Go to https://dash.cloudflare.com and log in (free account).
+2. Workers & Pages > Create > look for the "Pages" tab (not the default
+   "Upload" button, which creates a Worker instead — same result works but
+   gives a longer URL with your account name baked in).
+3. Choose "Direct Upload".
+4. Project name: kolors
+5. Drag in kolors-web.zip (same zip used for Netlify — see below).
+6. Cloudflare deploys it and gives you https://kolors.pages.dev
+
+   NOTE: the very first attempt used the default "Upload" flow, which created
+   a Worker at kolors.successure311.workers.dev instead of a Pages project.
+   That was deleted once the real Pages project (kolors.pages.dev) was
+   confirmed working — kolors.successure311.workers.dev no longer exists.
+
+
+===========================================================
+TO UPDATE THE APP LATER
+===========================================================
+Same trigger as updating Netlify — do both together so they don't drift
+out of sync:
+
+1. Run make-zip.ps1 (double-click MAKE-ZIP.bat) in this folder. It rebuilds
+   kolors-web.zip from the current files.
+2. Drag kolors-web.zip onto the Netlify Deploys page, same as always.
+3. Also go to https://dash.cloudflare.com > Workers & Pages > kolors >
+   Deployments > "Create deployment", and drag in the same kolors-web.zip.
+4. Wait for the green checkmark, then open https://kolors.pages.dev and
+   confirm the update shows (e.g. check a recent change you made).
+
+Tablets pick up changes the next time they open the app — nothing to
+reinstall, same as Netlify.
+
+
+===========================================================
+NOTES
+===========================================================
+- Same admin-password caveat as Netlify: kolors-web.zip deliberately
+  excludes README.txt, this file, and APPS_SCRIPT.gs (anything published is
+  downloadable by anyone with the link).
+- No code in this app is Netlify-specific or Cloudflare-specific — the exact
+  same zip works on either host unchanged.
+- If you ever want to rename kolors.pages.dev, you'd need to delete this
+  Pages project and re-create it with a new name (Pages project names can't
+  be renamed after creation) — or add a custom domain instead under the
+  project's "Custom domains" tab.

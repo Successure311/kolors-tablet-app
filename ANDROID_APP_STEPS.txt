@@ -1,0 +1,167 @@
+KOLORS — PUTTING THE APP ON TABLETS AND PHONES
+==============================================
+
+Everything here is free. No credit card, nothing to install on this PC.
+Total time: about 20 minutes, once. Then 30 seconds per tablet.
+
+
+-----------------------------------------------------------------------
+READ THIS FIRST — why you can't just copy the folder to a tablet
+-----------------------------------------------------------------------
+Double-clicking index.html does NOT work any more. Chrome, Brave and every
+modern browser block a "file://" page from contacting Google Sheets. That is
+the "Failed to fetch" / "origin null blocked by CORS policy" error you saw.
+
+So the app has to live at a web address (https://...). Once it does, each
+tablet opens that address once and adds it to its home screen — after that it
+opens full-screen with the Kolors logo, exactly like an installed app.
+
+
+=======================================================================
+PART 1 - FIX THE SHEET  (once, before anything else)
+=======================================================================
+
+1a. Update the Apps Script
+    1. Open your Google Sheet.
+    2. Extensions > Apps Script.
+    3. Select everything in Code.gs and delete it.
+    4. Open D:\Kolors\tablet-app\APPS_SCRIPT.gs, copy ALL of it, paste it in.
+    5. Click the save icon.
+    6. Deploy > Manage deployments.
+    7. Click the PENCIL icon on the existing deployment.
+    8. Version: choose "New version".
+    9. Click Deploy.
+
+    Do NOT use "New deployment" — that gives a different URL and the app
+    would stop working.
+
+    Until this is done, the "Reset All Entries" and "Delete" buttons will not
+    work. (The app now tells you so in plain words instead of showing a
+    strange error.)
+
+1b. Rebuild the three old tabs
+    The Tools, Parts and Employees tabs still use the OLD column names
+    (tool_id, part_id, created_at...). Anything saved into them right now
+    lands in the wrong columns.
+
+    1. In the Google Sheet, right-click the tab named  Tools     > Delete.
+    2. Same for  Parts .
+    3. Same for  Employees .
+       Do NOT delete  Operations  or  Admin .
+    4. Open Command Prompt and run:
+
+           cd D:\Kolors\app\backend
+           python push_existing_data_to_sheet.py
+
+    That recreates the three tabs with the right column names and refills them
+    from your real database. Nothing is lost.
+
+
+=======================================================================
+PART 2 - CHECK IT WORKS, ON THIS PC  (2 minutes)
+=======================================================================
+Before publishing anything, make sure the app is healthy:
+
+    Double-click:   D:\Kolors\tablet-app\TEST-LOCALLY.bat
+
+A black window opens and your browser opens http://localhost:8000.
+Leave the black window open while testing; close it when done.
+
+Check that:
+    - the dies, parts and employees all appear
+    - you can Start and Stop an entry, and it shows in the Google Sheet
+
+If that works, the app is fine and you can publish it.
+
+
+=======================================================================
+PART 3 - PUT THE APP ONLINE  (free, 5 minutes)
+=======================================================================
+We use Netlify Drop — free forever for this, no card needed.
+
+ 1. In a browser, go to:      https://app.netlify.com/drop
+ 2. Open File Explorer at     D:\Kolors
+ 3. Drag the whole  tablet-app  FOLDER onto the Netlify page and drop it.
+ 4. Wait ~20 seconds. It gives you an address like:
+        https://spontaneous-pika-4f21a9.netlify.app
+ 5. IMPORTANT: click "Sign up to claim this site" and sign up with your email
+    or Google account. If you skip this, the site is deleted after a while.
+ 6. Recommended: Site configuration > Change site name >  kolors-entry
+    Your address becomes:     https://kolors-entry.netlify.app
+ 7. Open that address on this PC and check the data appears.
+
+    >>> WRITE THAT ADDRESS DOWN. Every tablet uses it. <<<
+
+
+=======================================================================
+PART 4 - ADD IT TO EACH TABLET  (30 seconds per tablet)
+=======================================================================
+On an ANDROID tablet or phone:
+ 1. Open Chrome.
+ 2. Type in your address from Part 3.
+ 3. Wait for the app to load and show the data.
+ 4. Tap the three dots (top right).
+ 5. Tap  "Add to Home screen"  (on newer Android it says "Install app").
+ 6. Tap  Add  /  Install .
+ 7. Close Chrome. The Kolors logo is now on the home screen.
+ 8. Tap it — it opens full screen, no address bar. That is the app.
+
+On an IPHONE or IPAD:
+ 1. Open Safari (must be Safari, not Chrome).
+ 2. Go to your address.
+ 3. Tap the Share button (square with an arrow going up).
+ 4. Scroll down, tap  "Add to Home Screen"  >  Add .
+
+On a WINDOWS PC:
+ - Just open the address in Chrome/Edge, or use the ready-made program at
+   D:\Kolors\desktop-app\dist\Kolors-win32-x64\Kolors.exe
+
+
+=======================================================================
+UPDATING THE APP LATER
+=======================================================================
+ 1. Edit the files in  D:\Kolors\tablet-app .
+ 2. Go to your Netlify site > Deploys > drag the tablet-app folder on again.
+ 3. Done. Every tablet picks up the change the next time it is opened —
+    nothing to reinstall, nothing to send to anyone.
+
+
+=======================================================================
+NOTES
+=======================================================================
+ - Every device writes straight into the Google Sheet. The office dashboard PC
+   does NOT need to be switched on.
+ - The tablets need internet (WiFi or SIM). If the internet drops, the app
+   still opens, but Start/Stop shows an error instead of saving. There is no
+   offline queue.
+ - Anyone with the link can open the app. The "New Die / Add Parts" tab is
+   behind the admin login (Kolors / 1234, kept in the sheet's Admin tab —
+   change it there if you want). "Add Entry" is deliberately open, so
+   operators don't have to log in every time.
+ - Two tablets starting the SAME part in the same second could both succeed.
+   At your scale this is very unlikely; the app re-checks the sheet just
+   before saving.
+
+
+=======================================================================
+APPENDIX - if you ever DO need a real APK file
+=======================================================================
+Only worth it if you want the app in the Play Store, or pushed out by
+device-management software. Otherwise Part 4 gives you the same result with
+far less trouble.
+
+ 1. Go to  https://www.pwabuilder.com  and paste your Part 3 address.
+ 2. Click "Package For Stores" > Android.
+ 3. Set: App name = Kolors, Package ID = com.konnektindia.kolors,
+         Signing key = "Create new".
+ 4. Download the ZIP. Inside is  app-release-signed.apk .
+ 5. BACK UP the signing key (signing.zip + the password in next-steps.md)
+    somewhere safe. Lose it and you can never update the app — you would have
+    to uninstall and reinstall it on every single tablet.
+ 6. To remove the thin browser bar at the top: create the folder
+        D:\Kolors\tablet-app\.well-known
+    (Explorer won't allow a name starting with a dot, so use Command Prompt:
+        mkdir "D:\Kolors\tablet-app\.well-known"  )
+    copy  assetlinks.json  from the ZIP into it, and re-publish to Netlify.
+ 7. Copy the .apk to the tablet, tap it, allow "install from this source",
+    Install.
