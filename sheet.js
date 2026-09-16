@@ -391,16 +391,44 @@ async function updateTool(toolId, { newToolId, description, productName }) {
   }
 
   const before = { ...tool };
+  const descChanged = description != null && description.trim() !== tool.Description;
   if (description != null) tool.Description = description.trim();
   if (productName != null) tool.ProductName = productName.trim();
   saveCacheToLocalStorage();
 
   const fields = { ...tool, CreatedAt: isoStamp(tool.CreatedAt) };
+
+  // DieName is denormalized onto every Operations/OutsourceEntries/
+  // ChildParts row for this die (so the Entries/Outsource tables and the raw
+  // sheet can show a readable name without joining tables) — a Description
+  // change has to refresh it on every row that already carries the old one,
+  // same cascade renameTool does, just without a key change.
+  const affectedOps = descChanged ? store.operations.filter((o) => String(o.ToolId) === String(toolId)) : [];
+  const affectedOutsource = descChanged ? store.outsourceEntries.filter((o) => String(o.ToolId) === String(toolId)) : [];
+  const affectedChildParts = descChanged ? store.childParts.filter((c) => String(c.ToolId) === String(toolId)) : [];
+  if (descChanged) {
+    affectedOps.forEach((o) => { o.DieName = fields.Description; });
+    affectedOutsource.forEach((o) => { o.DieName = fields.Description; });
+    affectedChildParts.forEach((c) => { c.DieName = fields.Description; });
+    saveCacheToLocalStorage();
+  }
+
   (async () => {
     try {
-      await sheetUpsert("Tools", fields, "ToolId");
+      const items = [{ sheet: "Tools", row: fields, key_column: "ToolId" }];
+      affectedOps.forEach((o) => items.push({ sheet: "Operations", row: o, key_column: "Id" }));
+      affectedOutsource.forEach((o) => items.push({ sheet: "OutsourceEntries", row: o, key_column: "Id" }));
+      affectedChildParts.forEach((c) => items.push({ sheet: "ChildParts", row: c, key_column: "ChildId" }));
+      if (items.length > 1) {
+        await sheetBatch(items);
+      } else {
+        await sheetUpsert("Tools", fields, "ToolId");
+      }
     } catch (err) {
       Object.assign(tool, before);
+      affectedOps.forEach((o) => { o.DieName = before.Description; });
+      affectedOutsource.forEach((o) => { o.DieName = before.Description; });
+      affectedChildParts.forEach((c) => { c.DieName = before.Description; });
       saveCacheToLocalStorage();
       notifyBackgroundError(`Could not save changes to Die ${toolId} to the Google Sheet — undone. ${err.message}`);
     }

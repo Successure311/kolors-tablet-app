@@ -328,6 +328,8 @@ $("save-die-btn").addEventListener("click", async () => {
     refreshChildPartsTable();
     refreshDieStatusTable();
     refreshOpenOps();
+    refreshOutsourceTable();
+    refreshOutsourceOpenTable();
   } catch (err) {
     showMsg(editDieMsg, errText(err, t("tool.updateFailed")));
   }
