@@ -107,10 +107,11 @@ NOTES
 - To change the app later: drag the updated folder onto Netlify again (or, with
   an account, use "Deploys" > drag the folder). Tablets pick up the change the
   next time they are opened — nothing to reinstall.
-- There is also a backup copy of this app on Cloudflare (a different free
-  host) at https://kolors.pages.dev — same Google Sheet, same data, just an
-  alternate URL in case the Netlify one is ever unavailable. See
-  CLOUDFLARE_DEPLOY_STEPS.txt to keep it updated alongside Netlify.
+- The primary URL is now https://kolors.pages.dev (Cloudflare Pages), which
+  auto-deploys from the kolors-tablet-app GitHub repo on every push to main —
+  no manual zip/upload needed. Same Google Sheet, same data. Netlify is kept
+  only until tablet home-screen shortcuts are repointed, then retired. See
+  CLOUDFLARE_DEPLOY_STEPS.txt for details.
 
 
 ===========================================================
