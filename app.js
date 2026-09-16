@@ -1135,7 +1135,7 @@ $("refresh-open-btn-add").addEventListener("click", refreshFromSheet);
 // only the read-only tables/tiles re-render. Only Operations and
 // OutsourceEntries are polled (the fast-changing, shared-conflict data) —
 // Tools/Parts/Employees change rarely and still refresh via Refresh/reload.
-const SYNC_INTERVAL_MS = 3000;
+const SYNC_INTERVAL_MS = 4000;
 let syncInFlight = false;
 
 async function backgroundSync() {
