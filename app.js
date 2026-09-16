@@ -1126,13 +1126,16 @@ $("refresh-open-btn").addEventListener("click", refreshFromSheet);
 $("refresh-open-btn-add").addEventListener("click", refreshFromSheet);
 
 // ---------- background sync: keeps this device's Entries/Outsource lists
-// fresh without anyone tapping Refresh, so two tablets are far less likely
-// to both start the same part before either one notices the other already
-// did. Quiet — no "Refreshing..." banner, nothing typed in a form is
-// touched; only the read-only tables/tiles re-render. Only Operations and
+// fresh without anyone tapping Refresh, so a change made on one device (PC
+// browser, another tablet, another phone) shows up here quickly on its own.
+// The server-side lock in APPS_SCRIPT.gs (start_operation/start_outsource)
+// is what actually prevents two devices both starting the same part — this
+// poll is just about how fast everyone SEES the result, not correctness.
+// Quiet — no "Refreshing..." banner, nothing typed in a form is touched;
+// only the read-only tables/tiles re-render. Only Operations and
 // OutsourceEntries are polled (the fast-changing, shared-conflict data) —
 // Tools/Parts/Employees change rarely and still refresh via Refresh/reload.
-const SYNC_INTERVAL_MS = 10000;
+const SYNC_INTERVAL_MS = 4000;
 let syncInFlight = false;
 
 async function backgroundSync() {

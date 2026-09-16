@@ -56,6 +56,17 @@
  * and (2) when a scan IS needed (Stop/Restart/Return updating an existing
  * row), it reads only the key column instead of every column. Same
  * behaviour and return value either way, just less read/write work.
+ *
+ * What changed since then: added "start_operation"/"start_outsource"
+ * actions. Two tablets tapping Start on the same part in the same instant
+ * used to be checked only against each device's own local cache (see
+ * openOperationFor in sheet.js), so both could win and create two open rows
+ * for the same part. These actions wrap the check-and-append in
+ * LockService.getScriptLock(), so only one caller can ever win a race — the
+ * loser gets back {ok:false, conflict:{...}} with nothing written, instead
+ * of a second row silently existing. The old insert_only path is unchanged
+ * and still used by everything that doesn't have this race (Parts/Tools/etc.
+ * bulk creation).
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -262,6 +273,53 @@ function doPost(e) {
 
     SpreadsheetApp.flush();
     return json({ ok: true, count: items.length });
+  }
+
+  // ---- atomic "start" for Operations/OutsourceEntries — a script-wide lock
+  // makes the "is this part already open?" check and the append happen as
+  // one atomic step, so two devices racing to start the same part can't both
+  // win. Returns {ok:false, conflict:{...the existing open row...}} with
+  // nothing written if the part is already open; otherwise appends and
+  // returns {ok:true}, same shape as the default insert_only path below. ----
+  if (action === "start_operation" || action === "start_outsource") {
+    var startRow = body.row;
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(10000)) return json({ error: "Server busy — try again in a moment." });
+    try {
+      var openStatuses = action === "start_operation" ? ["Working", "Waiting"] : ["OutSource"];
+      if (!sheet) sheet = ss.insertSheet(sheetName);
+      var sHeaders = sheet.getLastRow() > 0
+        ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+        : Object.keys(startRow);
+      var pIdx = sHeaders.indexOf("PartId");
+      var stIdx = sHeaders.indexOf("Status");
+      if (sheet.getLastRow() > 1 && pIdx >= 0 && stIdx >= 0) {
+        var existingRows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sHeaders.length).getValues();
+        for (var i = 0; i < existingRows.length; i++) {
+          if (String(existingRows[i][pIdx]) === String(startRow.PartId) &&
+              openStatuses.indexOf(String(existingRows[i][stIdx])) >= 0) {
+            var conflict = {};
+            sHeaders.forEach(function (h, idx) { conflict[h] = existingRows[i][idx]; });
+            return json({ ok: false, conflict: conflict });
+          }
+        }
+      }
+      if (sheet.getLastRow() === 0) {
+        sheet.appendRow(sHeaders);
+      } else {
+        var newCols = Object.keys(startRow).filter(function (k) { return sHeaders.indexOf(k) < 0; });
+        if (newCols.length) {
+          sHeaders = sHeaders.concat(newCols);
+          sheet.getRange(1, 1, 1, sHeaders.length).setValues([sHeaders]);
+        }
+      }
+      var startValues = sHeaders.map(function (h) { return startRow[h] !== undefined ? startRow[h] : ""; });
+      sheet.appendRow(startValues);
+      SpreadsheetApp.flush();
+      return json({ ok: true });
+    } finally {
+      lock.releaseLock();
+    }
   }
 
   // ---- default: insert or update one row ----

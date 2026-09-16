@@ -173,12 +173,16 @@ async function sheetPost(payload) {
 const sheetUpsert = (tab, row, keyColumn) =>
   sheetPost({ sheet: tab, row, key_column: keyColumn });
 
-// For a row whose key is guaranteed brand new (Start/Send-out always
-// generate a fresh Id) — tells the backend to skip its usual "does this key
-// already exist" scan, which is the main cost of a write once a tab like
-// Operations has grown large. See the doPost comment in APPS_SCRIPT.gs.
-const sheetInsert = (tab, row) =>
-  sheetPost({ sheet: tab, row, insert_only: true });
+// Atomic check-and-append on the server (APPS_SCRIPT.gs, under a script
+// lock) — used for Start/Send-out, where two devices could otherwise both
+// win the same part. Comes back {ok:false, conflict:{...}} instead of
+// writing a second open row if another device already started it a moment
+// earlier. See the doPost comment in APPS_SCRIPT.gs.
+const sheetStartOperation = (row) =>
+  sheetPost({ action: "start_operation", sheet: "Operations", row });
+
+const sheetStartOutsource = (row) =>
+  sheetPost({ action: "start_outsource", sheet: "OutsourceEntries", row });
 
 const sheetDelete = (tab, keyColumn, keyValue) =>
   sheetPost({ action: "delete", sheet: tab, key_column: keyColumn, key_value: keyValue });
@@ -747,7 +751,16 @@ function startOutsource({ toolId, partId, process, place, duration }) {
 
   (async () => {
     try {
-      await sheetInsert("OutsourceEntries", row); // fresh Id — never already in the sheet
+      const out = await sheetStartOutsource(row);
+      if (out && out.ok === false) {
+        store.outsourceEntries = store.outsourceEntries.filter((e) => e.Id !== row.Id);
+        await reloadOutsourceEntries();
+        const c = out.conflict || {};
+        notifyBackgroundError(
+          `Part ${row.PartId} is already OutSource${c.Place ? ` at ${c.Place}` : ""} — someone else sent it out first.`
+        );
+        return;
+      }
     } catch (err) {
       store.outsourceEntries = store.outsourceEntries.filter((e) => e.Id !== row.Id);
       saveCacheToLocalStorage();
@@ -1009,7 +1022,19 @@ function startOperation({ toolId, partId, stage, operator }) {
 
   (async () => {
     try {
-      await sheetInsert("Operations", row); // fresh Id — never already in the sheet
+      // Server re-checks under a lock — the local openOperationFor() check
+      // above only guards against this same tablet's own stale cache; this
+      // is what actually stops two devices both winning the same Start.
+      const out = await sheetStartOperation(row);
+      if (out && out.ok === false) {
+        store.operations = store.operations.filter((o) => o.Id !== row.Id);
+        await reloadOperations();
+        const c = out.conflict || {};
+        notifyBackgroundError(
+          `Part ${row.PartId} is already ${c.Status || "in progress"} at ${c.Department || "another department"} — someone else started it first.`
+        );
+        return;
+      }
       await logOperationEvent(row, "Started");
     } catch (err) {
       store.operations = store.operations.filter((o) => o.Id !== row.Id);
