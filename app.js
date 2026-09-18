@@ -622,7 +622,7 @@ function scheduleRowHtml(activity, srNo) {
   return `
     <tr data-id="${esc(activity.Id)}">
       <td>${srNo}</td>
-      <td>${esc(activity.Name)}</td>
+      <td>${esc(activity.Activity)}</td>
       ${dateCells}
       <td class="row-actions">
         <button type="button" class="delete-schedule-btn" data-id="${esc(activity.Id)}">${t("schedule.delete")}</button>
@@ -645,7 +645,7 @@ function renderScheduleTable() {
 
   let srNo = 0;
   scheduleTableBody.innerHTML = currentScheduleActivities.map((a) => {
-    const divider = a.Name === SCHEDULE_TOOL_ROOM_START
+    const divider = a.Activity === SCHEDULE_TOOL_ROOM_START
       ? `<tr class="section-row"><td colspan="${colCount}">${t("schedule.toolRoomDivider")}</td></tr>`
       : "";
     return divider + scheduleRowHtml(a, ++srNo);
@@ -1801,6 +1801,14 @@ async function init() {
   loadShifts();
   loadTypeOfProjectOptions();
   renderWpStep();
+
+  // Fired here (page load) rather than waiting for the role-button tap, so
+  // Apps Script's cold-start latency overlaps with the operator reading the
+  // role screen and typing their ID/password instead of starting only once
+  // Login is pressed — see the comment on prefetchLogin() in sheet.js.
+  loadLoginCacheFromLocalStorage();
+  prefetchLogin("Admin");
+  prefetchLogin("Workshop");
 
   const hasCache = loadCacheFromLocalStorage();
   if (hasCache) {

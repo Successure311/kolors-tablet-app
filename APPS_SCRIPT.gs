@@ -70,11 +70,27 @@
  *
  * What changed since then: added Project Schedule (Plan) support — Tools
  * gained TypeOfProject/ProjectStartDate/NextScheduleSeq/ScheduleRangeStart/
- * ScheduleRangeEnd columns, and two new tabs (ScheduleActivities,
- * ScheduleMarks) are written the same additive way as every other tab —
- * created automatically on first write, no redeploy required. Only the
- * SCHEMA list below (used solely by the destructive "cleanup" action) needed
- * a manual update to stay accurate.
+ * ScheduleRangeEnd columns. The tablet app now reads/writes the SAME
+ * "Schedule" tab the dashboard already mirrors to (one row per activity, one
+ * dynamically-added column per Plan date holding "P") instead of a separate
+ * tab, so a Plan checked in either app shows up in both.
+ *
+ * What changed since then: fixed a real corruption bug in that "Schedule"
+ * tab. A date-named header cell (e.g. "09-11-2026") can get silently
+ * auto-converted by Sheets from plain text into a real Date value — after
+ * that, every header-comparison below (indexOf against a plain string) stops
+ * matching it, so (a) reads turned that header into a garbled key via
+ * Date.toString() when used as a JS object property name, and (b) writes
+ * treated it as a brand-new column every time, endlessly duplicating it and
+ * eventually confusing the row-matching enough to duplicate whole rows.
+ * Fixed two ways: headerKey() below normalises any Date-typed header cell
+ * back to the same "dd-MM-yyyy" text everywhere a header is read OR compared
+ * against, and any newly-created date-shaped column is explicitly set to
+ * Plain Text number format so Sheets can't re-convert it going forward. A
+ * one-time "repair_schedule" action (see doPost) cleans up damage already
+ * done: it merges the resulting duplicate rows/columns and removes the
+ * unrelated PlannedStart/PlannedEnd columns and a stray header-as-data row
+ * left over from an earlier version of the schedule feature.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -92,9 +108,40 @@ var SCHEMA = {
   OutsourceEntries: ["ToolId", "PartId", "DieName", "PartName", "Process", "Place", "Duration", "StartDate", "StartTime", "EndDate", "EndTime", "Status", "Id"],
   PartStatus: ["ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "StartDate", "StartTime", "EndDate", "EndTime", "Shift", "Status", "WaitingCount", "PartDept"],
   ChildParts: ["ToolId", "DieName", "ChildName", "Qty", "ChildId"],
-  ScheduleActivities: ["Id", "ToolId", "Seq", "Name", "IsCustom", "CreatedAt"],
-  ScheduleMarks: ["Id", "ActivityId", "ToolId", "MarkDate", "Planned", "CreatedAt"]
+  // Schedule's fixed identity columns — its Plan-date columns (one per day,
+  // named "dd-MM-yyyy") are dynamic and deliberately NOT listed here; the
+  // "cleanup" action below special-cases this tab so it never trims them.
+  Schedule: ["Id", "ToolId", "DieName", "Activity", "IsCustom"]
 };
+
+var DATE_HEADER_RE = /^\d{2}-\d{2}-\d{4}$/;
+
+// Normalises one header cell to the text form every comparison/lookup below
+// expects. A date-shaped header (e.g. "09-11-2026") can get silently
+// auto-converted by Sheets from plain text into a real Date value — left
+// raw, that breaks indexOf() string comparisons and (via Date.toString())
+// produces garbled keys like "Wed Dec 09 2026 00:00:00 GMT+0530 (India
+// Standard Time)" wherever the header is used as a JS object property name.
+function headerKey(v) {
+  if (Object.prototype.toString.call(v) === "[object Date]") {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), "dd-MM-yyyy");
+  }
+  return v;
+}
+
+function headerRow(sheet) {
+  return sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(headerKey);
+}
+
+// Sets a newly-created date-shaped header column to Plain Text number
+// format so Sheets can't re-auto-convert it back into a real Date later —
+// the root cause of the corruption headerKey() otherwise has to work around
+// on every read.
+function forceTextFormatIfDate(sheet, headerName, colIndex1Based) {
+  if (DATE_HEADER_RE.test(headerName)) {
+    sheet.getRange(1, colIndex1Based, sheet.getMaxRows(), 1).setNumberFormat("@");
+  }
+}
 
 function json(obj) {
   return ContentService
@@ -109,7 +156,7 @@ function readSheetRows(ss, sheetName) {
   var data = sheet.getDataRange().getValues();
   if (data.length < 2) return [];
 
-  var headers = data[0];
+  var headers = data[0].map(headerKey);
   var rows = [];
   for (var i = 1; i < data.length; i++) {
     var row = {};
@@ -152,7 +199,7 @@ function doPost(e) {
   // ---- delete every row whose key column matches key_value ----
   if (action === "delete") {
     if (!sheet || sheet.getLastRow() < 2) return json({ ok: true, deleted: 0 });
-    var dHeaders = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var dHeaders = headerRow(sheet);
     var dKeyIdx = dHeaders.indexOf(body.key_column);
     if (dKeyIdx < 0) return json({ error: "Unknown column " + body.key_column });
 
@@ -187,8 +234,13 @@ function doPost(e) {
       }
 
       if (sh.getLastRow() === 0) return; // no header row yet, nothing to trim
+      // Schedule's Plan-date columns are dynamic (one per day, never listed
+      // in SCHEMA) — trimming "unknown" columns there would delete every
+      // day's Plan marks. Only Schedule's identity columns are fixed, and
+      // this cleanup has nothing useful to trim among those.
+      if (name === "Schedule") return;
       var wanted = SCHEMA[name];
-      var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+      var headers = headerRow(sh);
       var extraCols = []; // 0-based column indexes not in `wanted`
       headers.forEach(function (h, idx) {
         if (wanted.indexOf(h) < 0) extraCols.push(idx);
@@ -204,6 +256,101 @@ function doPost(e) {
 
     SpreadsheetApp.flush();
     return json({ ok: true, deletedSheets: deletedSheets, trimmedColumns: trimmedColumns });
+  }
+
+  // ---- one-time repair for the "Schedule" tab's date-header corruption
+  // (see the file header comment above). Defaults to a DRY RUN — reports
+  // exactly what it would change without writing anything; only an explicit
+  // {dryRun:false} in the request body applies it for real. Fixes, in
+  // order: (1) drops the literal PlannedStart/PlannedEnd columns, a
+  // leftover from an older design no longer used anywhere; (2) merges any
+  // columns whose header normalises to the same date text (one plain text,
+  // one a corrupted Date-typed cell) by keeping either non-blank "P"; (3)
+  // drops any data row that is actually a stray copy of the header itself
+  // (its ToolId cell literally reads "ToolId"); (4) merges rows that share
+  // the same Id (created when the corruption above confused the upsert's
+  // row-matching), the same non-blank-wins way; (5) re-applies Plain Text
+  // format to every surviving date column so this can't recur. ----
+  if (action === "repair_schedule") {
+    var target = ss.getSheetByName("Schedule");
+    if (!target || target.getLastRow() < 2) {
+      return json({ ok: true, message: "Schedule tab is empty or missing — nothing to repair." });
+    }
+
+    var raw = target.getDataRange().getValues();
+    var rawHeaders = raw[0].map(headerKey);
+    var dataRows = raw.slice(1);
+    var DROP_COLUMNS = ["PlannedStart", "PlannedEnd"];
+
+    // Fold every original column onto the first-seen column with the same
+    // (normalised) header text, dropping DROP_COLUMNS entirely.
+    var mergedHeaders = [];
+    var headerFirstIdx = {};
+    var mergeTarget = rawHeaders.map(function (h) {
+      if (DROP_COLUMNS.indexOf(h) >= 0) return -1;
+      if (Object.prototype.hasOwnProperty.call(headerFirstIdx, h)) return headerFirstIdx[h];
+      headerFirstIdx[h] = mergedHeaders.length;
+      mergedHeaders.push(h);
+      return headerFirstIdx[h];
+    });
+
+    var idColIdx = mergedHeaders.indexOf("Id");
+    var toolIdColIdx = mergedHeaders.indexOf("ToolId");
+    var isBlank = function (v) { return v === "" || v === null || v === undefined; };
+
+    var mergedByKey = {};
+    var order = [];
+    var droppedGarbageRows = 0;
+    var mergedRowGroups = 0;
+
+    dataRows.forEach(function (r) {
+      var folded = new Array(mergedHeaders.length).fill("");
+      r.forEach(function (cell, origIdx) {
+        var t = mergeTarget[origIdx];
+        if (t >= 0 && !isBlank(cell)) folded[t] = cell;
+      });
+
+      if (toolIdColIdx >= 0 && String(folded[toolIdColIdx]) === "ToolId") {
+        droppedGarbageRows++;
+        return;
+      }
+
+      var key = idColIdx >= 0 ? String(folded[idColIdx]) : ("__row" + order.length);
+      if (Object.prototype.hasOwnProperty.call(mergedByKey, key)) {
+        var existing = mergedByKey[key];
+        folded.forEach(function (v, i) { if (!isBlank(v) && isBlank(existing[i])) existing[i] = v; });
+        mergedRowGroups++;
+      } else {
+        mergedByKey[key] = folded;
+        order.push(key);
+      }
+    });
+
+    var finalRows = order.map(function (k) { return mergedByKey[k]; });
+    var droppedCols = DROP_COLUMNS.filter(function (h) { return rawHeaders.indexOf(h) >= 0; });
+    var summary = {
+      ok: true,
+      dryRun: body.dryRun !== false,
+      droppedColumns: droppedCols,
+      mergedColumnCount: rawHeaders.length - mergedHeaders.length - droppedCols.length,
+      droppedGarbageRows: droppedGarbageRows,
+      mergedRowGroups: mergedRowGroups,
+      columnsBefore: rawHeaders.length,
+      columnsAfter: mergedHeaders.length,
+      rowsBefore: dataRows.length,
+      rowsAfter: finalRows.length,
+    };
+
+    if (body.dryRun !== false) return json(summary); // safe by default — preview only
+
+    target.clearContents();
+    mergedHeaders.forEach(function (h, idx) { forceTextFormatIfDate(target, h, idx + 1); });
+    target.getRange(1, 1, 1, mergedHeaders.length).setValues([mergedHeaders]);
+    if (finalRows.length) {
+      target.getRange(2, 1, finalRows.length, mergedHeaders.length).setValues(finalRows);
+    }
+    SpreadsheetApp.flush();
+    return json(summary);
   }
 
   // ---- remove all data rows, keeping the header row ----
@@ -228,6 +375,7 @@ function doPost(e) {
         var sh = ss.getSheetByName(name);
         if (!sh) sh = ss.insertSheet(name);
         var data = sh.getLastRow() > 0 ? sh.getDataRange().getValues() : [];
+        if (data.length) data[0] = data[0].map(headerKey);
         cache[name] = { sheet: sh, headers: data.length ? data[0] : [], data: data };
       }
       var c = cache[name];
@@ -268,7 +416,13 @@ function doPost(e) {
         }
       }
       if (foundIdx > 0) {
-        c.data[foundIdx] = values;
+        // Merge onto the existing row instead of replacing it outright — a
+        // caller that only sends a few changed fields (e.g. one Plan-mark
+        // date) must not blank every other column already recorded there.
+        var existingRow = c.data[foundIdx];
+        c.data[foundIdx] = c.headers.map(function (h, i) {
+          return row[h] !== undefined ? row[h] : existingRow[i];
+        });
       } else {
         c.data.push(values);
       }
@@ -278,6 +432,7 @@ function doPost(e) {
       var c = cache[name];
       if (!c.data.length) return;
       c.sheet.clearContents();
+      c.headers.forEach(function (h, idx) { forceTextFormatIfDate(c.sheet, h, idx + 1); });
       c.sheet.getRange(1, 1, c.data.length, c.headers.length).setValues(c.data);
     });
 
@@ -299,7 +454,7 @@ function doPost(e) {
       var openStatuses = action === "start_operation" ? ["Working", "Waiting"] : ["OutSource"];
       if (!sheet) sheet = ss.insertSheet(sheetName);
       var sHeaders = sheet.getLastRow() > 0
-        ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0]
+        ? headerRow(sheet)
         : Object.keys(startRow);
       var pIdx = sHeaders.indexOf("PartId");
       var stIdx = sHeaders.indexOf("Status");
@@ -348,15 +503,18 @@ function doPost(e) {
   if (sheet.getLastRow() === 0) {
     headers = Object.keys(row);
     sheet.appendRow(headers);
+    headers.forEach(function (h, idx) { forceTextFormatIfDate(sheet, h, idx + 1); });
   } else {
-    headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    headers = headerRow(sheet);
     // Additive: a field not already a column gets appended as a new one —
     // only the header row is extended, existing data rows are untouched
     // and just read as blank under the new column until they're written.
     var newKeys = Object.keys(row).filter(function (k) { return headers.indexOf(k) < 0; });
     if (newKeys.length) {
+      var startIdx = headers.length;
       headers = headers.concat(newKeys);
       sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      newKeys.forEach(function (h, i) { forceTextFormatIfDate(sheet, h, startIdx + i + 1); });
     }
   }
 
@@ -383,7 +541,12 @@ function doPost(e) {
       }
     }
     if (foundRow > 0) {
-      sheet.getRange(foundRow, 1, 1, headers.length).setValues([values]);
+      // Merge onto the existing row instead of replacing it outright — a
+      // caller that only sends a few changed fields (e.g. one Plan-mark
+      // date) must not blank every other column already recorded there.
+      var existingValues = sheet.getRange(foundRow, 1, 1, headers.length).getValues()[0];
+      var merged = headers.map(function (h, i) { return row[h] !== undefined ? row[h] : existingValues[i]; });
+      sheet.getRange(foundRow, 1, 1, headers.length).setValues([merged]);
     } else {
       sheet.appendRow(values);
     }

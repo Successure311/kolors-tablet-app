@@ -260,7 +260,7 @@ const startKey = (op) => `${isoDate(op.StartDate)} ${isoTime(op.StartTime)}`;
 
 const store = {
   tools: [], parts: [], employees: [], operations: [], customStages: [],
-  outsourceEntries: [], childParts: [], scheduleActivities: [], scheduleMarks: [],
+  outsourceEntries: [], childParts: [], scheduleActivities: [],
 };
 
 // ---------- local cache: lets the app open with the last-known data
@@ -282,7 +282,6 @@ function saveCacheToLocalStorage() {
       outsourceEntries: store.outsourceEntries,
       childParts: store.childParts,
       scheduleActivities: store.scheduleActivities,
-      scheduleMarks: store.scheduleMarks,
     }));
   } catch (_) { /* storage full/unavailable — cache is a nice-to-have, not required */ }
 }
@@ -300,7 +299,6 @@ function loadCacheFromLocalStorage() {
     store.outsourceEntries = data.outsourceEntries || [];
     store.childParts = data.childParts || [];
     store.scheduleActivities = data.scheduleActivities || [];
-    store.scheduleMarks = data.scheduleMarks || [];
     return true;
   } catch (_) {
     return false;
@@ -310,7 +308,7 @@ function loadCacheFromLocalStorage() {
 async function loadAll() {
   const data = await sheetReadMany([
     "Tools", "Parts", "Employees", "Operations", "CustomStages", "OutsourceEntries", "ChildParts",
-    "ScheduleActivities", "ScheduleMarks",
+    "Schedule",
   ]);
   store.tools = data.Tools;
   store.parts = data.Parts;
@@ -319,8 +317,7 @@ async function loadAll() {
   store.customStages = data.CustomStages;
   store.outsourceEntries = data.OutsourceEntries;
   store.childParts = data.ChildParts;
-  store.scheduleActivities = data.ScheduleActivities;
-  store.scheduleMarks = data.ScheduleMarks;
+  store.scheduleActivities = normaliseScheduleRows(data.Schedule);
   saveCacheToLocalStorage();
 }
 
@@ -336,12 +333,13 @@ const reloadChildParts = async () => {
   store.childParts = await sheetRead("ChildParts").catch(() => []);
   saveCacheToLocalStorage();
 };
+// Reads the SAME "Schedule" tab the dashboard mirrors to (see main.py's
+// _schedule_activity_identity_row/_schedule_mark_sheet_row) — one row per
+// activity, one dynamically-added column per Plan date holding "P" — so a
+// Plan checked in either app shows up in both, instead of the tablet keeping
+// its own separate schedule data.
 const reloadScheduleActivities = async () => {
-  store.scheduleActivities = await sheetRead("ScheduleActivities").catch(() => []);
-  saveCacheToLocalStorage();
-};
-const reloadScheduleMarks = async () => {
-  store.scheduleMarks = await sheetRead("ScheduleMarks").catch(() => []);
+  store.scheduleActivities = normaliseScheduleRows(await sheetRead("Schedule").catch(() => []));
   saveCacheToLocalStorage();
 };
 
@@ -397,25 +395,24 @@ async function createTool({ toolId, description, productName, typeOfProject, pro
     TypeOfProject: (typeOfProject || "").trim(),
     ProjectStartDate: (projectStartDate || "").trim(),
     NextPartSeq: 1,
-    NextScheduleSeq: SCHEDULE_ACTIVITIES.length + 1,
     ScheduleRangeStart: "",
     ScheduleRangeEnd: "",
     CreatedAt: nowStamp(),
   };
   // Auto-populate the fixed 17-activity Project Schedule template, so the
-  // schedule table appears fully filled in immediately — mirrors
-  // _seed_schedule_activities() in app/backend/main.py.
-  const scheduleRows = SCHEDULE_ACTIVITIES.map((name, i) => ({
+  // schedule table appears fully filled in immediately — same identity-row
+  // shape as _schedule_activity_identity_row() in app/backend/main.py, into
+  // the SAME "Schedule" tab the dashboard mirrors to.
+  const scheduleRows = SCHEDULE_ACTIVITIES.map((name) => ({
     Id: newScheduleActivityId(),
     ToolId: id,
-    Seq: i + 1,
-    Name: name,
+    DieName: row.Description,
+    Activity: name,
     IsCustom: false,
-    CreatedAt: nowStamp(),
   }));
   await sheetBatch(
     [{ sheet: "Tools", row, key_column: "ToolId" }].concat(
-      scheduleRows.map((r) => ({ sheet: "ScheduleActivities", row: r, key_column: "Id" }))
+      scheduleRows.map((r) => ({ sheet: "Schedule", row: r, key_column: "Id" }))
     )
   );
   await Promise.all([reloadTools(), reloadScheduleActivities()]);
@@ -509,27 +506,28 @@ async function renameTool(oldId, newId, fields) {
   const outsourceEntries = store.outsourceEntries.filter((o) => String(o.ToolId) === String(oldId));
   const childParts = store.childParts.filter((c) => String(c.ToolId) === String(oldId));
   const scheduleActivities = store.scheduleActivities.filter((a) => String(a.ToolId) === String(oldId));
-  const scheduleMarks = store.scheduleMarks.filter((m) => String(m.ToolId) === String(oldId));
 
   const items = [{ sheet: "Tools", row: renamed, key_column: "ToolId" }];
   parts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, ToolId: newId }, key_column: "PartId" }));
   ops.forEach((o) => items.push({ sheet: "Operations", row: { ...o, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
   outsourceEntries.forEach((o) => items.push({ sheet: "OutsourceEntries", row: { ...o, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
   childParts.forEach((c) => items.push({ sheet: "ChildParts", row: { ...c, ToolId: newId, DieName: renamed.Description }, key_column: "ChildId" }));
-  scheduleActivities.forEach((a) => items.push({ sheet: "ScheduleActivities", row: { ...a, ToolId: newId }, key_column: "Id" }));
-  scheduleMarks.forEach((m) => items.push({ sheet: "ScheduleMarks", row: { ...m, ToolId: newId }, key_column: "Id" }));
+  // The full row (identity columns + every Plan-date column already on it)
+  // is sent, not just {ToolId, DieName} — Schedule rows carry dynamic
+  // per-date columns that must survive the rename untouched.
+  scheduleActivities.forEach((a) => items.push({ sheet: "Schedule", row: { ...a, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
 
   await sheetBatch(items);
   await sheetDelete("Tools", "ToolId", oldId);
   await Promise.all([
     reloadTools(), reloadParts(), reloadOperations(), reloadOutsourceEntries(), reloadChildParts(),
-    reloadScheduleActivities(), reloadScheduleMarks(),
+    reloadScheduleActivities(),
   ]);
   return renamed;
 }
 
 // Cascades to every row that references this die (Parts, Operations,
-// OutsourceEntries, ChildParts), mirroring delete_tool() in
+// OutsourceEntries, ChildParts, Schedule), mirroring delete_tool() in
 // app/backend/main.py.
 async function deleteTool(toolId) {
   if (!findTool(toolId)) throw new Error("Die not found");
@@ -539,12 +537,11 @@ async function deleteTool(toolId) {
     sheetDelete("Operations", "ToolId", toolId),
     sheetDelete("OutsourceEntries", "ToolId", toolId),
     sheetDelete("ChildParts", "ToolId", toolId),
-    sheetDelete("ScheduleActivities", "ToolId", toolId),
-    sheetDelete("ScheduleMarks", "ToolId", toolId),
+    sheetDelete("Schedule", "ToolId", toolId),
   ]);
   await Promise.all([
     reloadTools(), reloadParts(), reloadOperations(), reloadOutsourceEntries(), reloadChildParts(),
-    reloadScheduleActivities(), reloadScheduleMarks(),
+    reloadScheduleActivities(),
   ]);
 }
 
@@ -810,82 +807,107 @@ async function saveChildParts(toolId, rows) {
 }
 
 // ---------- schedule (Project Schedule / Plan) ----------
-// The fixed 17 activities are auto-seeded on die creation (see createTool());
-// only custom ("Other") activities are ever added by hand here. Unlike the
-// dashboard's SQLite-backed model (one DieScheduleMark row per plan mark),
-// marks here are one row per (ActivityId, MarkDate) with a Planned boolean —
-// upserted rather than created/deleted, since the Apps Script "batch" action
-// only supports upserts, not per-item deletes.
+// Reads/writes the SAME "Schedule" tab the dashboard mirrors to (see
+// _schedule_activity_identity_row/_schedule_mark_sheet_row in
+// app/backend/main.py): one row per activity — {Id, ToolId, DieName,
+// Activity, IsCustom} — plus one dynamically-added column per Plan date
+// (named "dd-MM-yyyy") holding "P" when planned. A Plan checked in either
+// app therefore shows up in both, instead of the tablet keeping its own
+// separate schedule data. The fixed 17 activities are auto-seeded on die
+// creation (see createTool()); only custom ("Other") activities are ever
+// added by hand here.
 
-const newScheduleActivityId = () => `SCH-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const newScheduleActivityId = () => `T-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-const isPlanned = (v) => v === true || String(v).toLowerCase() === "true";
+// Older sheet data (or a network hiccup mid-write) can leave behind a stray
+// row whose cells are literally the header names themselves, or two rows
+// sharing the same Id — defensive even after APPS_SCRIPT.gs's one-time
+// "repair_schedule" action has cleaned the sheet itself, since a fresh
+// device could still be reading a stale mirror momentarily.
+function normaliseScheduleRows(rows) {
+  const byId = new Map();
+  const order = [];
+  (rows || []).forEach((row) => {
+    if (String(row.ToolId) === "ToolId") return; // stray header-as-data row
+    const id = String(row.Id);
+    if (byId.has(id)) {
+      const existing = byId.get(id);
+      Object.keys(row).forEach((k) => {
+        const v = row[k];
+        if (v !== "" && v != null && (existing[k] === "" || existing[k] == null)) existing[k] = v;
+      });
+    } else {
+      byId.set(id, { ...row });
+      order.push(id);
+    }
+  });
+  return order.map((id) => byId.get(id));
+}
+
+// "2026-09-17" -> "17-09-2026", matching mark_date.strftime("%d-%m-%Y") in
+// app/backend/main.py — the literal column name a Plan mark lives under.
+function dateHeaderKey(iso) {
+  const [y, m, d] = iso.split("-");
+  return `${d}-${m}-${y}`;
+}
 
 function listScheduleActivities(toolId) {
-  return store.scheduleActivities
-    .filter((a) => String(a.ToolId) === String(toolId))
-    .sort((a, b) => Number(a.Seq || 0) - Number(b.Seq || 0));
+  const rows = store.scheduleActivities.filter((a) => String(a.ToolId) === String(toolId));
+  // No seq/created-at column exists in the shared sheet to sort by — fixed
+  // activities sort into their canonical SCHEDULE_ACTIVITIES position
+  // (matching the dashboard's own ordering exactly); anything else (custom,
+  // "Other" activities) keeps the sheet's own row order, stably, after them.
+  return rows
+    .map((a, i) => ({ a, i, fixedIdx: SCHEDULE_ACTIVITIES.indexOf(a.Activity) }))
+    .sort((x, y) => {
+      const xKey = x.fixedIdx >= 0 ? x.fixedIdx : SCHEDULE_ACTIVITIES.length + x.i;
+      const yKey = y.fixedIdx >= 0 ? y.fixedIdx : SCHEDULE_ACTIVITIES.length + y.i;
+      return xKey - yKey;
+    })
+    .map((x) => x.a);
 }
 
 // Add custom ("Other") schedule activities at once — one row per name. Names
 // already present for this die (including the auto-seeded fixed ones) are
-// skipped rather than duplicated. Any name matching SCHEDULE_ACTIVITIES keeps
-// its canonical position (seq = index+1); anything else is appended after all
-// fixed ones via Tool.NextScheduleSeq, same incrementing-counter idea as
-// NextPartSeq. Mirrors add_schedule_bulk() in app/backend/main.py.
+// skipped rather than duplicated. Mirrors add_schedule_bulk() in
+// app/backend/main.py, minus the seq bookkeeping — order is derived at read
+// time instead (see listScheduleActivities() above).
 async function addScheduleBulk(toolId, names) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
   const clean = (names || []).map((n) => (n || "").trim()).filter(Boolean);
   if (!clean.length) throw new Error("At least one activity name is required");
 
-  const existingNames = new Set(listScheduleActivities(toolId).map((a) => a.Name));
-  let nextSeq = Number(tool.NextScheduleSeq || SCHEDULE_ACTIVITIES.length + 1) || SCHEDULE_ACTIVITIES.length + 1;
+  const existingNames = new Set(listScheduleActivities(toolId).map((a) => a.Activity));
   const created = [];
   clean.forEach((name) => {
     if (existingNames.has(name)) return;
-    let seq, isCustom;
-    if (SCHEDULE_ACTIVITIES.includes(name)) {
-      seq = SCHEDULE_ACTIVITIES.indexOf(name) + 1;
-      isCustom = false;
-    } else {
-      seq = nextSeq;
-      nextSeq += 1;
-      isCustom = true;
-    }
     created.push({
       Id: newScheduleActivityId(),
       ToolId: toolId,
-      Seq: seq,
-      Name: name,
-      IsCustom: isCustom,
-      CreatedAt: nowStamp(),
+      DieName: tool.Description,
+      Activity: name,
+      IsCustom: !SCHEDULE_ACTIVITIES.includes(name),
     });
     existingNames.add(name);
   });
   if (!created.length) return [];
 
-  await sheetBatch(
-    created.map((row) => ({ sheet: "ScheduleActivities", row, key_column: "Id" })).concat([
-      { sheet: "Tools", row: { ...tool, NextScheduleSeq: nextSeq }, key_column: "ToolId" },
-    ])
-  );
-  await Promise.all([reloadScheduleActivities(), reloadTools()]);
+  await sheetBatch(created.map((row) => ({ sheet: "Schedule", row, key_column: "Id" })));
+  await reloadScheduleActivities();
   return created;
 }
 
 async function deleteScheduleActivity(id) {
-  await sheetDelete("ScheduleActivities", "Id", id);
-  await sheetDelete("ScheduleMarks", "ActivityId", id);
-  await Promise.all([reloadScheduleActivities(), reloadScheduleMarks()]);
+  await sheetDelete("Schedule", "Id", id);
+  await reloadScheduleActivities();
 }
 
 // Every schedule activity for this die, each annotated with its Plan mark
 // for every date from start to end inclusive (Sundays skipped, matching the
 // paper Gantt Chart's working-day columns) — powers the Generate button's
-// bulk planning table. Purely local (no network round trip), unlike the
-// dashboard's /schedule/range endpoint, since the data is already synced
-// into `store`.
+// bulk planning table. Purely local (no network round trip) since the data
+// is already synced into `store`.
 function scheduleRange(toolId, start, end) {
   const dates = [];
   const cursor = new Date(`${start}T00:00:00`);
@@ -897,56 +919,44 @@ function scheduleRange(toolId, start, end) {
     cursor.setDate(cursor.getDate() + 1);
   }
 
-  const markedByActivity = {};
-  store.scheduleMarks.forEach((m) => {
-    if (String(m.ToolId) !== String(toolId) || !isPlanned(m.Planned)) return;
-    (markedByActivity[m.ActivityId] = markedByActivity[m.ActivityId] || new Set()).add(String(m.MarkDate));
-  });
-
   return {
     dates,
     activities: listScheduleActivities(toolId).map((a) => ({
       ...a,
-      marks: Object.fromEntries(dates.map((iso) => [iso, (markedByActivity[a.Id] || new Set()).has(iso)])),
+      marks: Object.fromEntries(dates.map((iso) => [iso, a[dateHeaderKey(iso)] === "P"])),
     })),
   };
 }
 
 // Saves the whole Generate table in one go — marksByDate maps each date
 // column (ISO string) to the activity ids checked for that date. Only cells
-// that actually changed are pushed to the sheet, mirroring the dashboard's
-// diffing in _apply_schedule_marks(). Also remembers the range on the Tool
-// row so reopening this die later shows the same range again (see
-// refreshScheduleRange() in app.js).
+// that actually changed are pushed, mirroring the dashboard's diffing in
+// _apply_schedule_marks(). Each push sends the activity's FULL current row
+// (every Plan-date column already known locally, not just the one changed)
+// so a slow-to-redeploy Apps Script can never blank out other dates by
+// treating an omitted column as "clear this" instead of "unchanged" — see
+// the APPS_SCRIPT.gs file header for the full story. Also remembers the
+// range on the Tool row so reopening this die later shows the same range
+// again (see refreshScheduleRange() in app.js).
 async function saveScheduleMarkRange(toolId, start, end, marksByDate) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
   const activities = listScheduleActivities(toolId);
-  const items = [];
+  const changedActivities = new Set();
 
   Object.keys(marksByDate).forEach((iso) => {
     const checkedIds = new Set((marksByDate[iso] || []).map(String));
+    const key = dateHeaderKey(iso);
     activities.forEach((activity) => {
-      const existing = store.scheduleMarks.find(
-        (m) => String(m.ActivityId) === String(activity.Id) && String(m.MarkDate) === iso
-      );
       const shouldBePlanned = checkedIds.has(String(activity.Id));
-      const alreadyPlanned = existing ? isPlanned(existing.Planned) : false;
+      const alreadyPlanned = activity[key] === "P";
       if (shouldBePlanned === alreadyPlanned) return;
-      const row = {
-        Id: `${activity.Id}::${iso}`,
-        ActivityId: activity.Id,
-        ToolId: toolId,
-        MarkDate: iso,
-        Planned: shouldBePlanned,
-        CreatedAt: nowStamp(),
-      };
-      items.push({ sheet: "ScheduleMarks", row, key_column: "Id" });
-      if (existing) existing.Planned = shouldBePlanned;
-      else store.scheduleMarks.push(row);
+      activity[key] = shouldBePlanned ? "P" : "";
+      changedActivities.add(activity);
     });
   });
 
+  const items = Array.from(changedActivities).map((row) => ({ sheet: "Schedule", row, key_column: "Id" }));
   items.push({ sheet: "Tools", row: { ...tool, ScheduleRangeStart: start, ScheduleRangeEnd: end }, key_column: "ToolId" });
   await sheetBatch(items);
   tool.ScheduleRangeStart = start;
@@ -1434,29 +1444,69 @@ function resetOperations() {
 }
 
 // ---------- logins ----------
+// Google Apps Script Web Apps have real latency — 1-3s once "warm", but the
+// first request after any period of idle ("cold start") can take 8-10s. Two
+// things soften that: (1) prefetchLogin() is fired as early as possible (see
+// init() in app.js, right at page load — not just on the role-button tap
+// used before) so that cold-start cost overlaps with the operator reading
+// the role screen and typing, instead of starting only once Login is
+// pressed; (2) the last successful read of each tab is cached to
+// localStorage, so a device that has logged in before can validate
+// INSTANTLY against that cache without waiting on the network at all, while
+// still kicking off a fresh read in the background to catch a changed
+// password on the next attempt.
+const LOGIN_CACHE_KEY = "kolors_login_cache_v1";
+let loginCache = { Admin: [], Workshop: [] };
 
-// Kicked off the moment a role button is tapped (see app.js), so the fetch
-// overlaps with the user typing their ID/password instead of starting only
-// once they hit Login. Re-fires every time the role screen is opened, so it
-// can't go stale across a long-open tablet session — a changed password
-// still takes effect on the very next login attempt.
+function loadLoginCacheFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(LOGIN_CACHE_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    loginCache.Admin = data.Admin || [];
+    loginCache.Workshop = data.Workshop || [];
+  } catch (_) { /* private browsing etc. — falls back to network-only */ }
+}
+
+function saveLoginCacheToLocalStorage() {
+  try {
+    localStorage.setItem(LOGIN_CACHE_KEY, JSON.stringify(loginCache));
+  } catch (_) { /* storage full/unavailable — cache is a nice-to-have */ }
+}
+
 const loginPrefetch = { Admin: null, Workshop: null };
 
+// Re-fires every time this is called (page load AND every role-button tap —
+// see app.js), so it can't go stale across a long-open tablet session — a
+// changed password still takes effect on the very next login attempt, and
+// each successful read refreshes the instant-path cache above for next time.
 function prefetchLogin(tab) {
-  loginPrefetch[tab] = sheetRead(tab).catch(() => []);
+  loginPrefetch[tab] = sheetRead(tab)
+    .then((rows) => {
+      loginCache[tab] = rows;
+      saveLoginCacheToLocalStorage();
+      return rows;
+    })
+    .catch(() => []);
 }
 
 async function checkLoginAgainst(tab, fallback, loginId, password) {
+  const matches = (rows) => rows.some(
+    (r) => String(r.LoginId).trim() === String(loginId).trim() && String(r.Password) === String(password)
+  );
+
+  // Instant path — no network wait at all — for a device that has already
+  // logged in successfully before.
+  if (loginCache[tab].length && matches(loginCache[tab])) return true;
+
   let rows = [];
   try {
     rows = await (loginPrefetch[tab] || sheetRead(tab));
   } catch (_) {
     rows = [];
   }
-  const valid = rows.length ? rows : [fallback];
-  return valid.some(
-    (r) => String(r.LoginId).trim() === String(loginId).trim() && String(r.Password) === String(password)
-  );
+  const valid = rows.length ? rows : (loginCache[tab].length ? loginCache[tab] : [fallback]);
+  return matches(valid);
 }
 
 const checkAdminLogin = (loginId, password) =>
