@@ -96,8 +96,13 @@ const OFFLINE_MESSAGE =
 
 /* Without a timeout, a stalled request (e.g. the backend slow to respond
  * under load from other devices) leaves fetch() pending forever — "Checking..."
- * just sits there with no way to recover short of reloading. */
-const REQUEST_TIMEOUT_MS = 15000;
+ * just sits there with no way to recover short of reloading. 15s used to be
+ * the cutoff, but a genuine Apps Script cold start (the container spinning
+ * up after a few idle minutes — nothing wrong with the request itself) can
+ * take 16-17s on its own, measured directly against this exact endpoint —
+ * long enough to trip that timeout and undo a perfectly good action (e.g.
+ * Start) for no real reason. Warmed up, the same request answers in 2-3s. */
+const REQUEST_TIMEOUT_MS = 28000;
 
 const TIMEOUT_MESSAGE =
   "Google Sheets is taking too long to respond — check the connection and try again.";
