@@ -462,7 +462,7 @@ function doPost(e) {
 
     var toolsHeaders = headerRow(toolsSheet);
     var toolsData = toolsSheet.getDataRange().getValues();
-    var fixedCells = 0;
+    var fixes = []; // {colIdx (0-based), rowIdx (0-based into toolsData), value}
     var fixedByField = {};
 
     DATE_ONLY_FIELDS.forEach(function (field) {
@@ -471,20 +471,27 @@ function doPost(e) {
       for (var r = 1; r < toolsData.length; r++) {
         var cell = toolsData[r][colIdx];
         if (Object.prototype.toString.call(cell) === "[object Date]") {
-          toolsData[r][colIdx] = dateOnlyValue(cell);
-          fixedCells++;
+          fixes.push({ colIdx: colIdx, rowIdx: r, value: dateOnlyValue(cell) });
           fixedByField[field] = (fixedByField[field] || 0) + 1;
         }
       }
     });
 
-    var toolsSummary = { ok: true, dryRun: body.dryRun !== false, fixedCells: fixedCells, fixedByField: fixedByField };
+    var toolsSummary = { ok: true, dryRun: body.dryRun !== false, fixedCells: fixes.length, fixedByField: fixedByField };
     if (toolsSummary.dryRun) return json(toolsSummary); // safe by default — preview only
 
-    if (fixedCells > 0) {
-      toolsSheet.getRange(2, 1, toolsData.length - 1, toolsHeaders.length).setValues(toolsData.slice(1));
-    }
+    // Lock every touched column to Plain Text BEFORE writing anything back —
+    // writing the plain-text value first and formatting the column after (as
+    // an earlier version of this action did) is too late: Sheets can still
+    // auto-convert a date-shaped string into a real Date at the moment
+    // setValues() runs, while the column format is still "Automatic". Each
+    // fixed cell is then written individually with setValue(), not as part
+    // of one big multi-row setValues() call, so there's no ambiguity about
+    // which format was in effect for which cell at write time.
     toolsHeaders.forEach(function (h, idx) { forceTextFormatIfDate(toolsSheet, h, idx + 1); });
+    fixes.forEach(function (f) {
+      toolsSheet.getRange(f.rowIdx + 1, f.colIdx + 1).setValue(f.value);
+    });
     SpreadsheetApp.flush();
     return json(toolsSummary);
   }
