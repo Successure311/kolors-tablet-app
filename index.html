@@ -100,6 +100,7 @@
           <p id="tool-msg" class="msg"></p>
         </div>
 
+        <div id="add-die-select-mount"></div>
         <div id="add-die-schedule-mount"></div>
         <div id="add-die-parts-mount"></div>
         <div id="add-die-employee-mount"></div>
@@ -107,6 +108,7 @@
 
       <!-- ----- Edit Existing Die: pick a die, then everything about it ----- -->
       <div id="newtool-edit" hidden>
+        <div id="edit-die-select-mount"></div>
         <div id="edit-die-schedule-mount"></div>
         <div id="edit-die-parts-mount"></div>
 
@@ -143,16 +145,21 @@
         </div>
       </div>
 
-      <!-- Shared: Select Die / Edit-Delete Die / Add Plates / Parts / Child
-           Parts. One physical copy — JS re-parents it into add-die-parts-mount
-           or edit-die-parts-mount depending on which option above is active. -->
+      <!-- Shared: Select Die. One physical copy — JS re-parents it into
+           add-die-select-mount or edit-die-select-mount, same pattern as
+           #parts-card, but always shown first since Schedule and Parts
+           below both depend on which die #part-tool-select currently holds. -->
+      <div class="card" id="select-die-row" hidden>
+        <label><span data-i18n="parts.selectDie">Select Die</span>
+          <select id="part-tool-select"></select>
+        </label>
+      </div>
+
+      <!-- Shared: Edit-Delete Die / Add Plates / Parts / Child Parts. One
+           physical copy — JS re-parents it into add-die-parts-mount or
+           edit-die-parts-mount depending on which option above is active. -->
       <div class="card" id="parts-card" hidden>
         <h2 data-i18n="parts.heading">Add / Edit Parts</h2>
-        <div id="select-die-row">
-          <label><span data-i18n="parts.selectDie">Select Die</span>
-            <select id="part-tool-select"></select>
-          </label>
-        </div>
 
         <div id="edit-die-controls" hidden>
           <div class="actions">

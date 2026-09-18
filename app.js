@@ -185,6 +185,8 @@ function refreshToolSelects() {
 // markup/ids — same "shared DOM node" pattern the desktop dashboard uses.
 const newtoolAddPanel = $("newtool-add");
 const newtoolEditPanel = $("newtool-edit");
+const addDieSelectMount = $("add-die-select-mount");
+const editDieSelectMount = $("edit-die-select-mount");
 const addDiePartsMount = $("add-die-parts-mount");
 const editDiePartsMount = $("edit-die-parts-mount");
 const partsCard = $("parts-card");
@@ -224,6 +226,7 @@ async function enterNewToolAddMode() {
   newtoolAddPanel.hidden = false;
   document.querySelectorAll(".newtool-mode-btn").forEach((b) =>
     b.classList.toggle("active", b.dataset.mode === "add"));
+  addDieSelectMount.appendChild(selectDieRow);
   addDiePartsMount.appendChild(partsCard);
   partsCard.hidden = true;
   selectDieRow.hidden = true;
@@ -253,6 +256,7 @@ async function enterNewToolEditMode() {
   newtoolEditPanel.hidden = false;
   document.querySelectorAll(".newtool-mode-btn").forEach((b) =>
     b.classList.toggle("active", b.dataset.mode === "edit"));
+  editDieSelectMount.appendChild(selectDieRow);
   editDiePartsMount.appendChild(partsCard);
   partsCard.hidden = false;
   selectDieRow.hidden = false;
