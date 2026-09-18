@@ -93,17 +93,21 @@
             <label><span data-i18n="tool.idLabel">Die ID</span> <input name="tool_id" data-i18n-placeholder="tool.idPlaceholder" placeholder="e.g. PT-170" required /></label>
             <label><span data-i18n="tool.descLabel">Description</span> <input name="description" data-i18n-placeholder="tool.descPlaceholder" placeholder="e.g. KLICK SPN Plastic Door 4 Way Knockout Tool" required /></label>
             <label><span data-i18n="tool.productLabel">Product Name</span> <input name="product_name" data-i18n-placeholder="tool.productPlaceholder" placeholder="optional" /></label>
+            <label><span data-i18n="tool.typeOfProjectLabel">Type Of Project</span> <select name="type_of_project" id="tool-type-of-project"></select></label>
+            <label><span data-i18n="tool.projectStartDateLabel">Project Start Date</span> <input type="date" name="project_start_date" /></label>
             <button type="submit" data-i18n="tool.addButton">Add Die</button>
           </form>
           <p id="tool-msg" class="msg"></p>
         </div>
 
+        <div id="add-die-schedule-mount"></div>
         <div id="add-die-parts-mount"></div>
         <div id="add-die-employee-mount"></div>
       </div>
 
       <!-- ----- Edit Existing Die: pick a die, then everything about it ----- -->
       <div id="newtool-edit" hidden>
+        <div id="edit-die-schedule-mount"></div>
         <div id="edit-die-parts-mount"></div>
 
         <div class="card" id="die-status-card" hidden>
@@ -159,6 +163,8 @@
             <label><span data-i18n="tool.idLabel">Die ID</span> <input id="edit-die-id" /></label>
             <label><span data-i18n="tool.descLabel">Description</span> <input id="edit-die-description" /></label>
             <label><span data-i18n="tool.productLabel">Product Name</span> <input id="edit-die-product" data-i18n-placeholder="tool.productPlaceholder" placeholder="optional" /></label>
+            <label><span data-i18n="tool.typeOfProjectLabel">Type Of Project</span> <select id="edit-die-type-of-project"></select></label>
+            <label><span data-i18n="tool.projectStartDateLabel">Project Start Date</span> <input type="date" id="edit-die-project-start-date" /></label>
             <div class="actions">
               <button type="button" id="save-die-btn" data-i18n="tool.saveButton">Save</button>
               <button type="button" id="cancel-edit-die-btn" data-i18n="tool.cancelButton">Cancel</button>
@@ -219,6 +225,67 @@
         </div>
       </div>
 
+      <!-- Shared: Project Schedule (Plan). One physical copy — JS re-parents
+           it into add-die-schedule-mount or edit-die-schedule-mount, same
+           pattern as #parts-card. Uses the die currently selected via
+           #part-tool-select (shared with the Parts card) rather than its own
+           Select Die dropdown. The fixed 17-activity template is
+           auto-seeded when the die is created — this card only ever adds
+           custom ("Other") activities beyond that. Plan ("P") marks are
+           edited a whole date range at a time: pick Start/End, press
+           Generate to lay out one column per working day (Sundays skipped)
+           matching the paper Gantt Chart, tick cells across that whole
+           range, then Save All writes every column in one go. -->
+      <div class="card die-info-anchor" id="schedule-card" hidden>
+        <h2 data-i18n="schedule.heading">Project Schedule (Plan)</h2>
+
+        <!-- Read-only project header, same fields as the paper Gantt Chart's
+             letterhead box — shown whenever a die is active. -->
+        <div id="die-info-box" hidden>
+          <div class="die-info-title" data-i18n="dieInfo.heading">KONNEKT INDIA PVT. LTD.</div>
+          <div class="die-info-row"><span data-i18n="dieInfo.projectNameLabel">Project Name :-</span> <span id="die-info-project-name"></span></div>
+          <div class="die-info-row"><span data-i18n="dieInfo.projectIdLabel">Project ID :-</span> <span id="die-info-project-id"></span></div>
+          <div class="die-info-row"><span data-i18n="dieInfo.startDateLabel">Project Start Date:-</span> <span id="die-info-start-date"></span></div>
+          <div class="die-info-row"><span data-i18n="dieInfo.typeLabel">Type Of Project:-</span> <span id="die-info-type"></span></div>
+        </div>
+        <div id="schedule-content" hidden>
+          <h3 data-i18n="schedule.addOtherHeading">Add Other Activity</h3>
+          <div class="other-input-row">
+            <label><span data-i18n="schedule.otherLabel">Activity Name (Other)</span>
+              <input id="schedule-other-input" data-i18n-placeholder="schedule.otherPlaceholder" placeholder="Type activity name" />
+            </label>
+            <button type="button" id="schedule-other-add-btn" data-i18n="schedule.addToListButton">Add to list</button>
+          </div>
+          <div id="schedule-custom-list" class="chip-list"></div>
+          <div class="actions">
+            <button type="button" id="add-schedule-btn" data-i18n="schedule.addSelectedButton">Add Activity</button>
+          </div>
+          <p id="schedule-add-msg" class="msg"></p>
+
+          <h3 data-i18n="schedule.tableHeading">Schedule</h3>
+          <div class="schedule-range-row">
+            <label><span data-i18n="schedule.rangeStartLabel">Plan From:</span>
+              <input type="date" id="schedule-range-start" />
+            </label>
+            <label><span data-i18n="schedule.rangeEndLabel">Plan To:</span>
+              <input type="date" id="schedule-range-end" />
+            </label>
+            <button type="button" id="generate-schedule-btn" data-i18n="schedule.generateButton">Generate</button>
+          </div>
+          <p id="schedule-generate-msg" class="msg"></p>
+          <div class="table-scroll">
+            <table id="schedule-table" class="grid-table">
+              <thead><tr></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="actions">
+            <button type="button" id="save-schedule-btn" data-i18n="schedule.saveAllButton">Save All</button>
+          </div>
+          <p id="schedule-msg" class="msg"></p>
+        </div>
+      </div>
+
       <!-- Shared: the Add/Edit Employee form. One physical copy, hidden by
            default — JS moves it into add-die-employee-mount (always shown
            there) or edit-die-employee-form-mount (only while actively
@@ -228,14 +295,14 @@
         <form id="employee-form">
           <input type="hidden" name="editing_name" />
           <label><span data-i18n="employees.nameLabel">Employee Name</span> <input name="name" id="employee-name-input" required /></label>
-          <label><span data-i18n="employees.shiftLabel">Shift</span>
-            <select name="shift" id="employee-shift-select"></select>
-          </label>
           <label><span data-i18n="employees.machineLabel">Machine</span>
             <select name="machine" id="employee-machine-select"></select>
           </label>
           <label id="employee-machine-other-wrap" hidden><span data-i18n="employees.machineOtherLabel">Machine Name (Other)</span>
             <input name="machine_other" id="employee-machine-other" data-i18n-placeholder="employees.machineOtherPlaceholder" placeholder="Type machine/department name" />
+          </label>
+          <label><span data-i18n="employees.shiftLabel">Shift</span>
+            <select name="shift" id="employee-shift-select"></select>
           </label>
           <div class="actions">
             <button type="submit" id="employee-submit-btn" data-i18n="employees.addButton">Add Employee</button>
@@ -248,13 +315,16 @@
 
     <!-- ===== Entry (Add Entry / Work Progress) ===== -->
     <section id="startstop" class="tab-panel active">
-      <div class="sub-tab-nav">
-        <button class="sub-tab-btn active" data-subtab="entry-add" data-i18n="entrySubtab.add">Add Entry</button>
-        <button class="sub-tab-btn" data-subtab="entry-progress" data-i18n="entrySubtab.progress">Work Progress</button>
+      <div id="entry-subtab-select" class="login-gate">
+        <div class="login-box role-box">
+          <h2 data-i18n="entrySubtab.selectTitle">Select Option</h2>
+          <button type="button" class="chooser-btn sub-tab-btn" data-subtab="entry-add" data-i18n="entrySubtab.add">Add Entry</button>
+          <button type="button" class="chooser-btn sub-tab-btn" data-subtab="entry-progress" data-i18n="entrySubtab.progress">Work Progress</button>
+        </div>
       </div>
 
       <!-- ----- Add Entry: Department -> Die -> Part + Employee -> Start ----- -->
-      <div id="entry-add" class="sub-tab-panel active">
+      <div id="entry-add" class="sub-tab-panel" hidden>
         <div class="card">
           <div class="wizard-nav">
             <button id="wiz-home-btn" type="button" data-i18n="wizard.home">🏠 Home</button>

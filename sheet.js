@@ -40,6 +40,24 @@ const PLATE_NAMES = [
   "WIRE CUT PUNCH", "INSERT",
 ];
 
+// Fixed manufacturing-activity template for a die's Project Schedule (Plan),
+// per the company's Gantt Chart tracking sheet — mirrors SCHEDULE_ACTIVITIES
+// in app/backend/models.py. "Tool Room" is a section divider the frontend
+// renders before the activity named in SCHEDULE_TOOL_ROOM_START, not a real
+// activity row itself.
+const SCHEDULE_ACTIVITIES = [
+  "Design Release Date", "PR Release Date", "PR Release Date of STD Part",
+  "PO Release Date", "Raw Material Cutting", "Sizing/Rough CNC",
+  "Surface Grinding", "Chamfering & Tapping", "Heat Treatment",
+  "Finishing CNC", "Wire Cutting", "EDM",
+  "STD Elements Received Date By Store", "Assembly", "Tool Trial-1",
+  "Tool Trial-2", "If Modification",
+];
+const SCHEDULE_TOOL_ROOM_START = "Raw Material Cutting";
+
+// Fixed "Type Of Project" dropdown options for a die's header metadata.
+const TYPE_OF_PROJECT_OPTIONS = ["New Tool", "Modification", "Repair"];
+
 // Used only if the sheet has no Admin tab yet (same as the dashboard's default).
 const DEFAULT_ADMIN = { LoginId: "Kolors", Password: "1234" };
 const DEFAULT_WORKSHOP = { LoginId: "Work", Password: "1234" };
@@ -242,7 +260,7 @@ const startKey = (op) => `${isoDate(op.StartDate)} ${isoTime(op.StartTime)}`;
 
 const store = {
   tools: [], parts: [], employees: [], operations: [], customStages: [],
-  outsourceEntries: [], childParts: [],
+  outsourceEntries: [], childParts: [], scheduleActivities: [], scheduleMarks: [],
 };
 
 // ---------- local cache: lets the app open with the last-known data
@@ -263,6 +281,8 @@ function saveCacheToLocalStorage() {
       customStages: store.customStages,
       outsourceEntries: store.outsourceEntries,
       childParts: store.childParts,
+      scheduleActivities: store.scheduleActivities,
+      scheduleMarks: store.scheduleMarks,
     }));
   } catch (_) { /* storage full/unavailable — cache is a nice-to-have, not required */ }
 }
@@ -279,6 +299,8 @@ function loadCacheFromLocalStorage() {
     store.customStages = data.customStages || [];
     store.outsourceEntries = data.outsourceEntries || [];
     store.childParts = data.childParts || [];
+    store.scheduleActivities = data.scheduleActivities || [];
+    store.scheduleMarks = data.scheduleMarks || [];
     return true;
   } catch (_) {
     return false;
@@ -288,6 +310,7 @@ function loadCacheFromLocalStorage() {
 async function loadAll() {
   const data = await sheetReadMany([
     "Tools", "Parts", "Employees", "Operations", "CustomStages", "OutsourceEntries", "ChildParts",
+    "ScheduleActivities", "ScheduleMarks",
   ]);
   store.tools = data.Tools;
   store.parts = data.Parts;
@@ -296,6 +319,8 @@ async function loadAll() {
   store.customStages = data.CustomStages;
   store.outsourceEntries = data.OutsourceEntries;
   store.childParts = data.ChildParts;
+  store.scheduleActivities = data.ScheduleActivities;
+  store.scheduleMarks = data.ScheduleMarks;
   saveCacheToLocalStorage();
 }
 
@@ -309,6 +334,14 @@ const reloadOutsourceEntries = async () => {
 };
 const reloadChildParts = async () => {
   store.childParts = await sheetRead("ChildParts").catch(() => []);
+  saveCacheToLocalStorage();
+};
+const reloadScheduleActivities = async () => {
+  store.scheduleActivities = await sheetRead("ScheduleActivities").catch(() => []);
+  saveCacheToLocalStorage();
+};
+const reloadScheduleMarks = async () => {
+  store.scheduleMarks = await sheetRead("ScheduleMarks").catch(() => []);
   saveCacheToLocalStorage();
 };
 
@@ -352,7 +385,7 @@ function listTools() {
 
 const findTool = (toolId) => store.tools.find((t) => String(t.ToolId) === String(toolId)) || null;
 
-async function createTool({ toolId, description, productName }) {
+async function createTool({ toolId, description, productName, typeOfProject, projectStartDate }) {
   const id = (toolId || "").trim();
   if (!id) throw new Error("Die ID is required");
   if (!(description || "").trim()) throw new Error("Description is required");
@@ -361,11 +394,31 @@ async function createTool({ toolId, description, productName }) {
     ToolId: id,
     Description: description.trim(),
     ProductName: (productName || "").trim(),
+    TypeOfProject: (typeOfProject || "").trim(),
+    ProjectStartDate: (projectStartDate || "").trim(),
     NextPartSeq: 1,
+    NextScheduleSeq: SCHEDULE_ACTIVITIES.length + 1,
+    ScheduleRangeStart: "",
+    ScheduleRangeEnd: "",
     CreatedAt: nowStamp(),
   };
-  await sheetUpsert("Tools", row, "ToolId");
-  await reloadTools();
+  // Auto-populate the fixed 17-activity Project Schedule template, so the
+  // schedule table appears fully filled in immediately — mirrors
+  // _seed_schedule_activities() in app/backend/main.py.
+  const scheduleRows = SCHEDULE_ACTIVITIES.map((name, i) => ({
+    Id: newScheduleActivityId(),
+    ToolId: id,
+    Seq: i + 1,
+    Name: name,
+    IsCustom: false,
+    CreatedAt: nowStamp(),
+  }));
+  await sheetBatch(
+    [{ sheet: "Tools", row, key_column: "ToolId" }].concat(
+      scheduleRows.map((r) => ({ sheet: "ScheduleActivities", row: r, key_column: "Id" }))
+    )
+  );
+  await Promise.all([reloadTools(), reloadScheduleActivities()]);
   return row;
 }
 
@@ -375,7 +428,7 @@ async function createTool({ toolId, description, productName }) {
 // that path (renameTool) still waits on the network — but a plain
 // Description/Product Name edit is instant, same as everywhere else: the
 // screen updates right away and the sheet write happens in the background.
-async function updateTool(toolId, { newToolId, description, productName }) {
+async function updateTool(toolId, { newToolId, description, productName, typeOfProject, projectStartDate }) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
 
@@ -385,6 +438,8 @@ async function updateTool(toolId, { newToolId, description, productName }) {
       ...tool,
       Description: description != null ? description.trim() : tool.Description,
       ProductName: productName != null ? productName.trim() : tool.ProductName,
+      TypeOfProject: typeOfProject != null ? typeOfProject.trim() : tool.TypeOfProject,
+      ProjectStartDate: projectStartDate != null ? projectStartDate.trim() : tool.ProjectStartDate,
       CreatedAt: isoStamp(tool.CreatedAt),
     };
     return renameTool(toolId, newId, fields);
@@ -394,6 +449,8 @@ async function updateTool(toolId, { newToolId, description, productName }) {
   const descChanged = description != null && description.trim() !== tool.Description;
   if (description != null) tool.Description = description.trim();
   if (productName != null) tool.ProductName = productName.trim();
+  if (typeOfProject != null) tool.TypeOfProject = typeOfProject.trim();
+  if (projectStartDate != null) tool.ProjectStartDate = projectStartDate.trim();
   saveCacheToLocalStorage();
 
   const fields = { ...tool, CreatedAt: isoStamp(tool.CreatedAt) };
@@ -451,16 +508,23 @@ async function renameTool(oldId, newId, fields) {
   const ops = store.operations.filter((o) => String(o.ToolId) === String(oldId));
   const outsourceEntries = store.outsourceEntries.filter((o) => String(o.ToolId) === String(oldId));
   const childParts = store.childParts.filter((c) => String(c.ToolId) === String(oldId));
+  const scheduleActivities = store.scheduleActivities.filter((a) => String(a.ToolId) === String(oldId));
+  const scheduleMarks = store.scheduleMarks.filter((m) => String(m.ToolId) === String(oldId));
 
   const items = [{ sheet: "Tools", row: renamed, key_column: "ToolId" }];
   parts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, ToolId: newId }, key_column: "PartId" }));
   ops.forEach((o) => items.push({ sheet: "Operations", row: { ...o, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
   outsourceEntries.forEach((o) => items.push({ sheet: "OutsourceEntries", row: { ...o, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
   childParts.forEach((c) => items.push({ sheet: "ChildParts", row: { ...c, ToolId: newId, DieName: renamed.Description }, key_column: "ChildId" }));
+  scheduleActivities.forEach((a) => items.push({ sheet: "ScheduleActivities", row: { ...a, ToolId: newId }, key_column: "Id" }));
+  scheduleMarks.forEach((m) => items.push({ sheet: "ScheduleMarks", row: { ...m, ToolId: newId }, key_column: "Id" }));
 
   await sheetBatch(items);
   await sheetDelete("Tools", "ToolId", oldId);
-  await Promise.all([reloadTools(), reloadParts(), reloadOperations(), reloadOutsourceEntries(), reloadChildParts()]);
+  await Promise.all([
+    reloadTools(), reloadParts(), reloadOperations(), reloadOutsourceEntries(), reloadChildParts(),
+    reloadScheduleActivities(), reloadScheduleMarks(),
+  ]);
   return renamed;
 }
 
@@ -475,8 +539,13 @@ async function deleteTool(toolId) {
     sheetDelete("Operations", "ToolId", toolId),
     sheetDelete("OutsourceEntries", "ToolId", toolId),
     sheetDelete("ChildParts", "ToolId", toolId),
+    sheetDelete("ScheduleActivities", "ToolId", toolId),
+    sheetDelete("ScheduleMarks", "ToolId", toolId),
   ]);
-  await Promise.all([reloadTools(), reloadParts(), reloadOperations(), reloadOutsourceEntries(), reloadChildParts()]);
+  await Promise.all([
+    reloadTools(), reloadParts(), reloadOperations(), reloadOutsourceEntries(), reloadChildParts(),
+    reloadScheduleActivities(), reloadScheduleMarks(),
+  ]);
 }
 
 // ---------- parts ----------
@@ -738,6 +807,151 @@ async function saveChildParts(toolId, rows) {
   }
   await reloadChildParts();
   return built;
+}
+
+// ---------- schedule (Project Schedule / Plan) ----------
+// The fixed 17 activities are auto-seeded on die creation (see createTool());
+// only custom ("Other") activities are ever added by hand here. Unlike the
+// dashboard's SQLite-backed model (one DieScheduleMark row per plan mark),
+// marks here are one row per (ActivityId, MarkDate) with a Planned boolean —
+// upserted rather than created/deleted, since the Apps Script "batch" action
+// only supports upserts, not per-item deletes.
+
+const newScheduleActivityId = () => `SCH-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const isPlanned = (v) => v === true || String(v).toLowerCase() === "true";
+
+function listScheduleActivities(toolId) {
+  return store.scheduleActivities
+    .filter((a) => String(a.ToolId) === String(toolId))
+    .sort((a, b) => Number(a.Seq || 0) - Number(b.Seq || 0));
+}
+
+// Add custom ("Other") schedule activities at once — one row per name. Names
+// already present for this die (including the auto-seeded fixed ones) are
+// skipped rather than duplicated. Any name matching SCHEDULE_ACTIVITIES keeps
+// its canonical position (seq = index+1); anything else is appended after all
+// fixed ones via Tool.NextScheduleSeq, same incrementing-counter idea as
+// NextPartSeq. Mirrors add_schedule_bulk() in app/backend/main.py.
+async function addScheduleBulk(toolId, names) {
+  const tool = findTool(toolId);
+  if (!tool) throw new Error("Die not found");
+  const clean = (names || []).map((n) => (n || "").trim()).filter(Boolean);
+  if (!clean.length) throw new Error("At least one activity name is required");
+
+  const existingNames = new Set(listScheduleActivities(toolId).map((a) => a.Name));
+  let nextSeq = Number(tool.NextScheduleSeq || SCHEDULE_ACTIVITIES.length + 1) || SCHEDULE_ACTIVITIES.length + 1;
+  const created = [];
+  clean.forEach((name) => {
+    if (existingNames.has(name)) return;
+    let seq, isCustom;
+    if (SCHEDULE_ACTIVITIES.includes(name)) {
+      seq = SCHEDULE_ACTIVITIES.indexOf(name) + 1;
+      isCustom = false;
+    } else {
+      seq = nextSeq;
+      nextSeq += 1;
+      isCustom = true;
+    }
+    created.push({
+      Id: newScheduleActivityId(),
+      ToolId: toolId,
+      Seq: seq,
+      Name: name,
+      IsCustom: isCustom,
+      CreatedAt: nowStamp(),
+    });
+    existingNames.add(name);
+  });
+  if (!created.length) return [];
+
+  await sheetBatch(
+    created.map((row) => ({ sheet: "ScheduleActivities", row, key_column: "Id" })).concat([
+      { sheet: "Tools", row: { ...tool, NextScheduleSeq: nextSeq }, key_column: "ToolId" },
+    ])
+  );
+  await Promise.all([reloadScheduleActivities(), reloadTools()]);
+  return created;
+}
+
+async function deleteScheduleActivity(id) {
+  await sheetDelete("ScheduleActivities", "Id", id);
+  await sheetDelete("ScheduleMarks", "ActivityId", id);
+  await Promise.all([reloadScheduleActivities(), reloadScheduleMarks()]);
+}
+
+// Every schedule activity for this die, each annotated with its Plan mark
+// for every date from start to end inclusive (Sundays skipped, matching the
+// paper Gantt Chart's working-day columns) — powers the Generate button's
+// bulk planning table. Purely local (no network round trip), unlike the
+// dashboard's /schedule/range endpoint, since the data is already synced
+// into `store`.
+function scheduleRange(toolId, start, end) {
+  const dates = [];
+  const cursor = new Date(`${start}T00:00:00`);
+  const last = new Date(`${end}T00:00:00`);
+  while (cursor <= last) {
+    if (cursor.getDay() !== 0) { // Sunday=0 in JS, matches weekday()==6 in Python
+      dates.push(`${cursor.getFullYear()}-${pad(cursor.getMonth() + 1)}-${pad(cursor.getDate())}`);
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  const markedByActivity = {};
+  store.scheduleMarks.forEach((m) => {
+    if (String(m.ToolId) !== String(toolId) || !isPlanned(m.Planned)) return;
+    (markedByActivity[m.ActivityId] = markedByActivity[m.ActivityId] || new Set()).add(String(m.MarkDate));
+  });
+
+  return {
+    dates,
+    activities: listScheduleActivities(toolId).map((a) => ({
+      ...a,
+      marks: Object.fromEntries(dates.map((iso) => [iso, (markedByActivity[a.Id] || new Set()).has(iso)])),
+    })),
+  };
+}
+
+// Saves the whole Generate table in one go — marksByDate maps each date
+// column (ISO string) to the activity ids checked for that date. Only cells
+// that actually changed are pushed to the sheet, mirroring the dashboard's
+// diffing in _apply_schedule_marks(). Also remembers the range on the Tool
+// row so reopening this die later shows the same range again (see
+// refreshScheduleRange() in app.js).
+async function saveScheduleMarkRange(toolId, start, end, marksByDate) {
+  const tool = findTool(toolId);
+  if (!tool) throw new Error("Die not found");
+  const activities = listScheduleActivities(toolId);
+  const items = [];
+
+  Object.keys(marksByDate).forEach((iso) => {
+    const checkedIds = new Set((marksByDate[iso] || []).map(String));
+    activities.forEach((activity) => {
+      const existing = store.scheduleMarks.find(
+        (m) => String(m.ActivityId) === String(activity.Id) && String(m.MarkDate) === iso
+      );
+      const shouldBePlanned = checkedIds.has(String(activity.Id));
+      const alreadyPlanned = existing ? isPlanned(existing.Planned) : false;
+      if (shouldBePlanned === alreadyPlanned) return;
+      const row = {
+        Id: `${activity.Id}::${iso}`,
+        ActivityId: activity.Id,
+        ToolId: toolId,
+        MarkDate: iso,
+        Planned: shouldBePlanned,
+        CreatedAt: nowStamp(),
+      };
+      items.push({ sheet: "ScheduleMarks", row, key_column: "Id" });
+      if (existing) existing.Planned = shouldBePlanned;
+      else store.scheduleMarks.push(row);
+    });
+  });
+
+  items.push({ sheet: "Tools", row: { ...tool, ScheduleRangeStart: start, ScheduleRangeEnd: end }, key_column: "ToolId" });
+  await sheetBatch(items);
+  tool.ScheduleRangeStart = start;
+  tool.ScheduleRangeEnd = end;
+  saveCacheToLocalStorage();
 }
 
 // ---------- outsource (send a part to an outside vendor) ----------

@@ -145,6 +145,19 @@ main { padding: 16px; max-width: 1400px; margin: 0 auto; }
 .role-btn { padding: 22px 16px; font-size: 18px; font-weight: 700; background: #14213d; }
 .role-btn:active { background: #22315a; }
 
+/* Add Entry / Work Progress chooser buttons — same solid navy-blue /
+   white-text look as the Admin/Workshop role buttons. */
+.sub-tab-btn.chooser-btn {
+  background: #14213d;
+  color: #fff;
+  border: none;
+  padding: 22px 16px;
+  font-size: 18px;
+  font-weight: 700;
+  border-radius: 10px;
+}
+.sub-tab-btn.chooser-btn:active { background: #22315a; }
+
 /* ---------- forms ---------- */
 form, .card { display: flex; flex-direction: column; gap: 10px; }
 label { display: flex; flex-direction: column; font-size: 13px; font-weight: 600; color: #444; gap: 4px; }
@@ -246,6 +259,7 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
 .wizard-nav { flex-direction: row; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .wizard-nav button { background: #22315a; flex: 0 0 auto; }
 .breadcrumb { font-size: 13px; color: #666; font-weight: 700; }
+.wiz-step h2 { display: flex; align-items: baseline; justify-content: center; gap: 6px; text-align: center; }
 
 .kpi-grid {
   display: grid;
@@ -299,6 +313,28 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
 .other-input-row { flex-direction: row; align-items: flex-end; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
 .other-input-row label { flex: 1 1 200px; max-width: 320px; }
 
+/* Read-only project header, same fields as the paper Gantt Chart's
+   letterhead box — pinned to the card's top-right corner via absolute
+   positioning (not flex/grid) so its own height never pushes the rest of
+   the card's content down. .die-info-anchor marks the .card it floats
+   inside (needs position:relative for the absolute child to anchor to). */
+.die-info-anchor { position: relative; }
+#die-info-box {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  width: 320px;
+  max-width: calc(100% - 40px);
+  border: 1px solid #c7cad1;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #f9fafb;
+  font-size: 13px;
+}
+.die-info-title { font-weight: 700; text-align: center; margin-bottom: 6px; }
+.die-info-row { display: flex; justify-content: space-between; gap: 10px; padding: 2px 0; }
+.die-info-row span:first-child { font-weight: 600; color: #444; }
+
 /* ---------- Add Plates: checkbox grid + custom-name chip queue ---------- */
 .plate-checkbox-grid { display: flex; flex-wrap: wrap; gap: 10px 28px; margin-top: 4px; }
 .plate-checkbox-grid label {
@@ -312,6 +348,44 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
   color: #1b1f24;
 }
 .plate-checkbox-grid input[type="checkbox"] { width: 20px; height: 20px; }
+
+/* Project Schedule (Plan) table — bordered grid on every cell (not just a
+   bottom rule) plus a shaded header, matching the paper Gantt Chart's look
+   instead of the app's plainer default table style. */
+table.grid-table { border: 1px solid #c7cad1; }
+table.grid-table th, table.grid-table td { border: 1px solid #c7cad1; white-space: normal; }
+table.grid-table thead th {
+  background: #2c3140;
+  color: #fff;
+  font-size: 12px;
+}
+table.grid-table tbody tr:nth-child(even) { background: #f4f6f9; }
+/* "Tool Room" section-header row, spanning the full width like the paper
+   Gantt Chart's yellow banner row above that section's activities. */
+table.grid-table tr.section-row td {
+  background: #ffe066;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+#schedule-table input[type="checkbox"] { width: 22px; height: 22px; }
+#schedule-table td.schedule-date-col { text-align: center; white-space: nowrap; width: 38px; }
+/* Date column headers run bottom-to-top (rotate(180deg) flips vertical-rl's
+   default top-to-bottom reading direction) so narrow columns still fit a
+   full "17-Sep-2026" label, matching the paper Gantt Chart's dense header
+   row instead of forcing one wide column per date. */
+#schedule-table th.schedule-date-col {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  text-align: center;
+  white-space: nowrap;
+  width: 38px;
+  padding: 6px 2px;
+  font-size: 11px;
+}
+.schedule-range-row { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin: 8px 0 4px; }
+.schedule-range-row label { max-width: 220px; }
 
 .chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .chip {
@@ -389,4 +463,8 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
   .employee-list { flex-direction: row; flex-wrap: wrap; }
   .employee-list .kpi-card { flex: 1 1 130px; }
   .tab-btn { flex: 1 1 auto; padding: 12px 8px; font-size: 13px; }
+  /* On a narrow tablet/phone the die-info letterhead box has no room to
+     float beside the Schedule card's content the way it does on a wide
+     desktop screen — stack it above instead of overlapping. */
+  #die-info-box { position: static; width: 100%; max-width: none; margin-bottom: 12px; }
 }

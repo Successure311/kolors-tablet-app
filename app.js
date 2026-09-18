@@ -50,6 +50,7 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
     // Switching to the Entry tab always lands on Home, never mid-wizard on
     // whatever step/Previous/Next state was left behind.
     if (btn.dataset.tab === "startstop") {
+      resetEntrySubTabs();
       refreshOpenOps();
       renderDeptGrid();
       wizResetToHome();
@@ -62,6 +63,19 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 });
 
 // ---------- Entry page sub-tabs: Add Entry / Work Progress ----------
+// Neither is chosen by default — the Entry tab starts on a centered
+// Admin/Workshop-style chooser box (#entry-subtab-select), and a wizard only
+// appears (replacing the chooser) once one of the two options is clicked.
+// "🏠 Home" inside each wizard is the way back to that chooser (see
+// wiz-home-btn / wp-home-btn below).
+const entrySubtabSelect = $("entry-subtab-select");
+
+function resetEntrySubTabs() {
+  document.querySelectorAll(".sub-tab-btn").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".sub-tab-panel").forEach((p) => { p.classList.remove("active"); p.hidden = true; });
+  entrySubtabSelect.hidden = false;
+}
+
 document.querySelectorAll(".sub-tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".sub-tab-btn").forEach((b) => b.classList.remove("active"));
@@ -70,6 +84,7 @@ document.querySelectorAll(".sub-tab-btn").forEach((btn) => {
     const panel = $(btn.dataset.subtab);
     panel.classList.add("active");
     panel.hidden = false;
+    entrySubtabSelect.hidden = true;
     // Same rule one level down: switching between Add Entry and Work
     // Progress always resets that sub-tab's wizard to Home too.
     if (btn.dataset.subtab === "entry-add") wizResetToHome();
@@ -109,6 +124,7 @@ function enterApp(role) {
     document.querySelector('.tab-btn[data-tab="startstop"]').classList.add("active");
     $("startstop").classList.add("active");
   }
+  resetEntrySubTabs();
   if (role === "admin") enterNewToolAddMode();
   showScreen(appShell);
 }
@@ -179,6 +195,11 @@ const dieStatusCard = $("die-status-card");
 const addDieEmployeeMount = $("add-die-employee-mount");
 const editDieEmployeeFormMount = $("edit-die-employee-form-mount");
 const employeeFormCard = $("employee-form-card");
+const addDieScheduleMount = $("add-die-schedule-mount");
+const editDieScheduleMount = $("edit-die-schedule-mount");
+const scheduleCard = $("schedule-card");
+const scheduleContent = $("schedule-content");
+const dieInfoBox = $("die-info-box");
 
 let newToolMode = null; // "add" | "edit" | null
 
@@ -189,6 +210,7 @@ function syncEditDieVisibility() {
   const has = !!partToolSelect.value;
   editDieControls.hidden = !has;
   partsContent.hidden = !has;
+  scheduleContent.hidden = !has;
   editDieFields.hidden = true;
 }
 
@@ -207,6 +229,9 @@ async function enterNewToolAddMode() {
   selectDieRow.hidden = true;
   editDieControls.hidden = true;
   partsContent.hidden = true;
+  addDieScheduleMount.appendChild(scheduleCard);
+  scheduleCard.hidden = true;
+  scheduleContent.hidden = true;
   addDieEmployeeMount.appendChild(employeeFormCard);
   employeeFormCard.hidden = false;
   exitEmployeeEditMode();
@@ -214,6 +239,7 @@ async function enterNewToolAddMode() {
   showMsg(editDieMsg, "");
   refreshToolSelects();
   partToolSelect.value = "";
+  dieInfoBox.hidden = true;
 }
 
 // Edit Existing Die: nothing but the Select Die dropdown shows until a die
@@ -232,6 +258,9 @@ async function enterNewToolEditMode() {
   selectDieRow.hidden = false;
   editDieControls.hidden = true;
   partsContent.hidden = true;
+  editDieScheduleMount.appendChild(scheduleCard);
+  scheduleCard.hidden = false;
+  scheduleContent.hidden = true;
   dieStatusCard.hidden = false;
   employeeFormCard.hidden = true;
   showMsg(editDieMsg, "");
@@ -245,6 +274,7 @@ async function enterNewToolEditMode() {
     partToolSelect.insertAdjacentHTML("afterbegin", `<option value="">${t("newToolSubtab.selectDieToEdit")}</option>`);
     partToolSelect.value = "";
   }
+  dieInfoBox.hidden = true;
   refreshDieStatusTable();
 }
 
@@ -267,6 +297,8 @@ toolForm.addEventListener("submit", async (e) => {
       toolId: fd.get("tool_id"),
       description: fd.get("description"),
       productName: fd.get("product_name"),
+      typeOfProject: fd.get("type_of_project"),
+      projectStartDate: fd.get("project_start_date"),
     });
     showMsg(toolMsg, t("tool.added", { id: tool.ToolId }), true);
     toolForm.reset();
@@ -278,6 +310,10 @@ toolForm.addEventListener("submit", async (e) => {
     partsContent.hidden = false;
     refreshParts();
     refreshChildPartsTable();
+    scheduleCard.hidden = false;
+    scheduleContent.hidden = false;
+    refreshScheduleRange();
+    refreshDieInfoBox();
   } catch (err) {
     showMsg(toolMsg, errText(err, t("tool.addFailed")));
   }
@@ -291,6 +327,8 @@ const editDieMsg = $("edit-die-msg");
 const editDieIdInput = $("edit-die-id");
 const editDieDescInput = $("edit-die-description");
 const editDieProductInput = $("edit-die-product");
+const editDieTypeOfProjectSelect = $("edit-die-type-of-project");
+const editDieProjectStartInput = $("edit-die-project-start-date");
 
 editDieBtn.addEventListener("click", () => {
   const toolId = partToolSelect.value;
@@ -300,6 +338,8 @@ editDieBtn.addEventListener("click", () => {
   editDieIdInput.value = tool.ToolId;
   editDieDescInput.value = tool.Description || "";
   editDieProductInput.value = tool.ProductName || "";
+  editDieTypeOfProjectSelect.value = tool.TypeOfProject || "";
+  editDieProjectStartInput.value = tool.ProjectStartDate || "";
   editDieFields.hidden = false;
   showMsg(editDieMsg, "");
 });
@@ -318,6 +358,8 @@ $("save-die-btn").addEventListener("click", async () => {
       newToolId: editDieIdInput.value.trim(),
       description: editDieDescInput.value,
       productName: editDieProductInput.value,
+      typeOfProject: editDieTypeOfProjectSelect.value,
+      projectStartDate: editDieProjectStartInput.value,
     });
     showMsg(editDieMsg, t("tool.updated", { id: tool.ToolId }), true);
     editDieFields.hidden = true;
@@ -330,6 +372,8 @@ $("save-die-btn").addEventListener("click", async () => {
     refreshOpenOps();
     refreshOutsourceTable();
     refreshOutsourceOpenTable();
+    generateSchedule();
+    refreshDieInfoBox();
   } catch (err) {
     showMsg(editDieMsg, errText(err, t("tool.updateFailed")));
   }
@@ -349,6 +393,8 @@ deleteDieBtn.addEventListener("click", async () => {
     refreshChildPartsTable();
     refreshDieStatusTable();
     refreshOpenOps();
+    generateSchedule();
+    refreshDieInfoBox();
   } catch (err) {
     showMsg(editDieMsg, errText(err, t("tool.deleteFailed")));
   }
@@ -418,6 +464,8 @@ partToolSelect.addEventListener("change", () => {
   syncEditDieVisibility();
   refreshParts();
   refreshChildPartsTable();
+  refreshScheduleRange();
+  refreshDieInfoBox();
 });
 
 function refreshParts() {
@@ -483,6 +531,217 @@ $("save-parts-btn").addEventListener("click", async () => {
     showMsg(partMsg, errText(err, t("parts.saveAllFailed")));
   }
 });
+
+// ---------- Project Schedule (Plan): the fixed 17-activity template is
+// auto-seeded when a die is created (see createTool() in sheet.js) — this
+// section only lets the admin add extra custom ("Other") activities beyond
+// that. Plan ("P") marks are edited a whole date range at a time, matching
+// the paper Gantt Chart: pick a Start/End date and press Generate to lay out
+// one column per working day (Sundays skipped), tick cells across the whole
+// range, then Save All writes every changed cell in one go. ----------
+const scheduleOtherInput = $("schedule-other-input");
+const scheduleCustomList = $("schedule-custom-list");
+const scheduleAddMsg = $("schedule-add-msg");
+const scheduleMsg = $("schedule-msg");
+const scheduleGenerateMsg = $("schedule-generate-msg");
+const scheduleTableHeadRow = document.querySelector("#schedule-table thead tr");
+const scheduleTableBody = document.querySelector("#schedule-table tbody");
+const scheduleRangeStartInput = $("schedule-range-start");
+const scheduleRangeEndInput = $("schedule-range-end");
+
+let customScheduleNames = []; // queued "Other" activity names, not yet created
+let currentScheduleDates = []; // ISO dates (Sundays excluded) for the currently generated table
+let currentScheduleActivities = []; // last scheduleRange() result's activities, each with a marks map
+let currentScheduleStart = ""; // Start/End inputs' values at the last successful Generate — sent
+let currentScheduleEnd = "";   // back on Save All so the Tool remembers exactly this range
+
+function todayIso() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// Formats an ISO date ("2026-09-17") as a compact Gantt-style column header
+// ("17-Sep-2026"), independent of the app's language toggle — the paper
+// Gantt Chart itself is always in English.
+function scheduleDateHeaderLabel(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${String(d).padStart(2, "0")}-${months[m - 1]}-${y}`;
+}
+
+// Defaults both range inputs to today (a single-day table) whenever they're
+// empty — called on every die switch/create so a new die always starts from
+// a sane range instead of carrying one over from a previously selected die.
+function defaultScheduleRangeIfEmpty() {
+  if (!scheduleRangeStartInput.value) scheduleRangeStartInput.value = todayIso();
+  if (!scheduleRangeEndInput.value) scheduleRangeEndInput.value = scheduleRangeStartInput.value;
+}
+
+function renderScheduleCustomList() {
+  scheduleCustomList.innerHTML = customScheduleNames.map((n) =>
+    `<span class="chip">${esc(n)} <button type="button" data-name="${esc(n)}">×</button></span>`
+  ).join("");
+  scheduleCustomList.querySelectorAll("button").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      customScheduleNames = customScheduleNames.filter((n) => n !== btn.dataset.name);
+      renderScheduleCustomList();
+    }));
+}
+
+$("schedule-other-add-btn").addEventListener("click", () => {
+  const name = scheduleOtherInput.value.trim();
+  if (!name) { scheduleOtherInput.focus(); return; }
+  if (!customScheduleNames.includes(name)) customScheduleNames.push(name);
+  scheduleOtherInput.value = "";
+  renderScheduleCustomList();
+});
+scheduleOtherInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("schedule-other-add-btn").click(); }
+});
+
+$("add-schedule-btn").addEventListener("click", async () => {
+  const toolId = partToolSelect.value;
+  if (!toolId) return showMsg(scheduleAddMsg, t("schedule.addDieFirst"));
+  if (!customScheduleNames.length) return showMsg(scheduleAddMsg, t("schedule.typeActivityNameFirst"));
+  showMsg(scheduleAddMsg, t("common.saving"), true);
+  try {
+    const created = await addScheduleBulk(toolId, customScheduleNames);
+    showMsg(scheduleAddMsg, t("schedule.activitiesAddedMsg", { count: created.length }), true);
+    customScheduleNames = [];
+    renderScheduleCustomList();
+    generateSchedule();
+  } catch (err) {
+    showMsg(scheduleAddMsg, errText(err, t("schedule.activitiesAddFailed")));
+  }
+});
+
+function scheduleRowHtml(activity, srNo) {
+  const dateCells = currentScheduleDates.map((iso) =>
+    `<td class="schedule-date-col"><input type="checkbox" class="schedule-plan-checkbox" data-date="${iso}" ${activity.marks[iso] ? "checked" : ""} /></td>`
+  ).join("");
+  return `
+    <tr data-id="${esc(activity.Id)}">
+      <td>${srNo}</td>
+      <td>${esc(activity.Name)}</td>
+      ${dateCells}
+      <td class="row-actions">
+        <button type="button" class="delete-schedule-btn" data-id="${esc(activity.Id)}">${t("schedule.delete")}</button>
+      </td>
+    </tr>`;
+}
+
+// Redraws the table from the last-fetched currentScheduleDates/
+// currentScheduleActivities without recomputing — used after generateSchedule()
+// and again on a language switch to re-translate labels without losing the
+// currently generated range.
+function renderScheduleTable() {
+  const colCount = currentScheduleDates.length + 3; // Sr.No. + Activity + one per date + Actions
+  scheduleTableHeadRow.innerHTML = [
+    `<th>${t("schedule.thSrNo")}</th>`,
+    `<th>${t("schedule.thActivity")}</th>`,
+    ...currentScheduleDates.map((iso) => `<th class="schedule-date-col">${scheduleDateHeaderLabel(iso)}</th>`),
+    `<th></th>`,
+  ].join("");
+
+  let srNo = 0;
+  scheduleTableBody.innerHTML = currentScheduleActivities.map((a) => {
+    const divider = a.Name === SCHEDULE_TOOL_ROOM_START
+      ? `<tr class="section-row"><td colspan="${colCount}">${t("schedule.toolRoomDivider")}</td></tr>`
+      : "";
+    return divider + scheduleRowHtml(a, ++srNo);
+  }).join("") || `<tr><td colspan="${colCount}">${t("schedule.none")}</td></tr>`;
+
+  scheduleTableBody.querySelectorAll(".delete-schedule-btn").forEach((btn) =>
+    btn.addEventListener("click", () => deleteScheduleRow(btn.dataset.id)));
+}
+
+// Recomputes the Plan grid for the currently picked Start/End range and
+// (re)draws the table — called by the Generate button, and after any change
+// (add/delete activity, Save All) that should refresh the same range rather
+// than reset it. Purely local (scheduleRange() reads from `store`), so no
+// await needed, unlike the dashboard's network round trip.
+function generateSchedule() {
+  const toolId = partToolSelect.value;
+  currentScheduleDates = [];
+  currentScheduleActivities = [];
+  if (!toolId) { renderScheduleTable(); return; }
+  defaultScheduleRangeIfEmpty();
+  const start = scheduleRangeStartInput.value;
+  const end = scheduleRangeEndInput.value;
+  if (end < start) return showMsg(scheduleGenerateMsg, t("schedule.rangeInvalid"));
+  const data = scheduleRange(toolId, start, end);
+  currentScheduleStart = start;
+  currentScheduleEnd = end;
+  currentScheduleDates = data.dates;
+  currentScheduleActivities = data.activities;
+  renderScheduleTable();
+  showMsg(scheduleGenerateMsg, currentScheduleDates.length ? "" : t("schedule.rangeAllSundays"));
+}
+
+document.getElementById("generate-schedule-btn").addEventListener("click", () => generateSchedule());
+
+async function deleteScheduleRow(id) {
+  if (!confirm(t("schedule.deleteConfirm"))) return;
+  try {
+    await deleteScheduleActivity(id);
+    showMsg(scheduleMsg, t("schedule.deleted"), true);
+    generateSchedule();
+  } catch (err) {
+    showMsg(scheduleMsg, errText(err, t("schedule.deleteFailed")));
+  }
+}
+
+$("save-schedule-btn").addEventListener("click", async () => {
+  const toolId = partToolSelect.value;
+  if (!toolId) return;
+  if (!currentScheduleDates.length) return showMsg(scheduleMsg, t("schedule.generateFirst"));
+  const marks = {};
+  currentScheduleDates.forEach((iso) => { marks[iso] = []; });
+  scheduleTableBody.querySelectorAll("tr[data-id]").forEach((row) => {
+    const activityId = row.dataset.id;
+    row.querySelectorAll(".schedule-plan-checkbox").forEach((cb) => {
+      if (cb.checked) marks[cb.dataset.date].push(activityId);
+    });
+  });
+  showMsg(scheduleMsg, t("common.saving"), true);
+  try {
+    await saveScheduleMarkRange(toolId, currentScheduleStart, currentScheduleEnd, marks);
+    showMsg(scheduleMsg, t("schedule.savedAllMsg"), true);
+    generateSchedule();
+  } catch (err) {
+    showMsg(scheduleMsg, errText(err, t("schedule.saveAllFailed")));
+  }
+});
+
+// Loads the die's own remembered range (the Start/End last Generated + Saved
+// for it, per Tool.ScheduleRangeStart/End) and regenerates, so reopening an
+// existing die shows the same Plan table again instead of resetting to
+// today. Called whenever a different die is selected/created/deleted.
+function refreshScheduleRange() {
+  const tool = findTool(partToolSelect.value);
+  scheduleRangeStartInput.value = (tool && tool.ScheduleRangeStart) || "";
+  scheduleRangeEndInput.value = (tool && tool.ScheduleRangeEnd) || "";
+  generateSchedule();
+}
+
+function loadTypeOfProjectOptions() {
+  const html = TYPE_OF_PROJECT_OPTIONS.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+  $("tool-type-of-project").innerHTML = html;
+  editDieTypeOfProjectSelect.innerHTML = html;
+}
+
+// Read-only project header (Project Name/ID/Start Date/Type) shown beside
+// Select Die whenever a die is active — mirrors the paper Gantt Chart's
+// letterhead box.
+function refreshDieInfoBox() {
+  const tool = findTool(partToolSelect.value);
+  if (!tool) { dieInfoBox.hidden = true; return; }
+  $("die-info-project-name").textContent = tool.Description || "";
+  $("die-info-project-id").textContent = tool.ToolId || "";
+  $("die-info-start-date").textContent = tool.ProjectStartDate || t("dieInfo.notSet");
+  $("die-info-type").textContent = tool.TypeOfProject || t("dieInfo.notSet");
+  dieInfoBox.hidden = false;
+}
 
 // ---------- Child Parts: one flat Name+Qty list per die, staged in an
 // editable table and only persisted when Save Child Parts is clicked.
@@ -779,7 +1038,10 @@ function renderWizStep() {
     [wizState.stage ? machineLabel(wizState.stage) : null, wizState.toolId].filter(Boolean).join(" › ");
 }
 
-$("wiz-home-btn").addEventListener("click", wizResetToHome);
+$("wiz-home-btn").addEventListener("click", () => {
+  wizResetToHome();
+  resetEntrySubTabs();
+});
 
 $("wiz-prev-btn").addEventListener("click", () => {
   if (wizIndex > 0) {
@@ -983,7 +1245,10 @@ function showWpOutsourceStep() {
   $("wp-results-card").hidden = true;
   refreshOutsourceOpenTable();
 }
-$("wp-home-btn").addEventListener("click", wpGoHome);
+$("wp-home-btn").addEventListener("click", () => {
+  wpGoHome();
+  resetEntrySubTabs();
+});
 
 $("wp-prev-btn").addEventListener("click", () => {
   if (wpStep === 0) return;
@@ -1495,6 +1760,8 @@ function applyLanguage(lang) {
   refreshParts();
   refreshChildPartsTable();
   refreshDieStatusTable();
+  renderScheduleTable();
+  refreshDieInfoBox();
   refreshEmployeeTable();
   refreshOpenOps();
   if (trackToolId.value && trackResult.innerHTML.trim()) renderTrackResult();
@@ -1510,6 +1777,8 @@ function refreshEverything() {
   refreshParts();
   refreshChildPartsTable();
   refreshDieStatusTable();
+  refreshScheduleRange();
+  refreshDieInfoBox();
   loadEmployeeMachineOptions();
   refreshEmployeeTable();
   refreshOpenOps();
@@ -1530,6 +1799,7 @@ async function init() {
   applyStaticTranslations();
   loadPlateNames();
   loadShifts();
+  loadTypeOfProjectOptions();
   renderWpStep();
 
   const hasCache = loadCacheFromLocalStorage();

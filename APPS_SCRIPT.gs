@@ -67,6 +67,14 @@
  * of a second row silently existing. The old insert_only path is unchanged
  * and still used by everything that doesn't have this race (Parts/Tools/etc.
  * bulk creation).
+ *
+ * What changed since then: added Project Schedule (Plan) support — Tools
+ * gained TypeOfProject/ProjectStartDate/NextScheduleSeq/ScheduleRangeStart/
+ * ScheduleRangeEnd columns, and two new tabs (ScheduleActivities,
+ * ScheduleMarks) are written the same additive way as every other tab —
+ * created automatically on first write, no redeploy required. Only the
+ * SCHEMA list below (used solely by the destructive "cleanup" action) needed
+ * a manual update to stay accurate.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -75,7 +83,7 @@
 var SCHEMA = {
   Admin: ["LoginId", "Password"],
   Workshop: ["LoginId", "Password"],
-  Tools: ["ToolId", "Description", "ProductName", "NextPartSeq", "CreatedAt"],
+  Tools: ["ToolId", "Description", "ProductName", "TypeOfProject", "ProjectStartDate", "NextPartSeq", "NextScheduleSeq", "ScheduleRangeStart", "ScheduleRangeEnd", "CreatedAt"],
   Parts: ["PartId", "ToolId", "Seq", "Name", "Material", "RoughSize", "Qty", "DesignReady", "CodeReady", "CreatedAt"],
   Employees: ["Name", "Shift", "Machine", "CreatedAt"],
   CustomStages: ["Name", "CreatedAt"],
@@ -83,7 +91,9 @@ var SCHEMA = {
   OperationHistory: ["ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "Shift", "WaitingCount", "Date", "Time", "OpId", "Event", "CycleNo"],
   OutsourceEntries: ["ToolId", "PartId", "DieName", "PartName", "Process", "Place", "Duration", "StartDate", "StartTime", "EndDate", "EndTime", "Status", "Id"],
   PartStatus: ["ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "StartDate", "StartTime", "EndDate", "EndTime", "Shift", "Status", "WaitingCount", "PartDept"],
-  ChildParts: ["ToolId", "DieName", "ChildName", "Qty", "ChildId"]
+  ChildParts: ["ToolId", "DieName", "ChildName", "Qty", "ChildId"],
+  ScheduleActivities: ["Id", "ToolId", "Seq", "Name", "IsCustom", "CreatedAt"],
+  ScheduleMarks: ["Id", "ActivityId", "ToolId", "MarkDate", "Planned", "CreatedAt"]
 };
 
 function json(obj) {
