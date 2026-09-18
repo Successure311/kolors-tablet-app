@@ -91,6 +91,16 @@
  * done: it merges the resulting duplicate rows/columns and removes the
  * unrelated PlannedStart/PlannedEnd columns and a stray header-as-data row
  * left over from an earlier version of the schedule feature.
+ *
+ * What changed since then: added two read-only/targeted admin actions for
+ * spring-cleaning stray tabs safely. doGet(?list_sheets=1) reports every
+ * tab's name, row/column counts and headers, and whether "cleanup"'s SCHEMA
+ * recognises it — read-only, changes nothing. doPost {action:
+ * "delete_sheets", names:[...]} deletes only the exact tabs named (e.g. the
+ * now-unused "ScheduleMarks"/"ScheduleActivities" tabs left over from
+ * before the Schedule-tab-sharing change above) — unlike "cleanup", it
+ * never touches columns on any other tab, so it's safe to run without
+ * re-auditing the whole schema first.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -171,6 +181,27 @@ function readSheetRows(ss, sheetName) {
 function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
+  // Read-only inventory — ?list_sheets=1 — reports every tab's name, row/
+  // column counts and header row, plus whether it's one SCHEMA/"cleanup"
+  // knows about. Used to inspect the live spreadsheet before deciding what
+  // (if anything) is safe to delete; never modifies anything.
+  if (e.parameter.list_sheets) {
+    var known = Object.keys(SCHEMA);
+    var sheets = ss.getSheets().map(function (sh) {
+      var name = sh.getName();
+      var rows = sh.getLastRow();
+      var cols = sh.getLastColumn();
+      return {
+        name: name,
+        knownToApp: known.indexOf(name) >= 0,
+        rows: Math.max(0, rows - 1), // data rows, excluding header
+        columns: cols,
+        headers: rows > 0 ? headerRow(sh) : [],
+      };
+    });
+    return json({ sheets: sheets });
+  }
+
   // Multiple tabs in one call — ?sheets=Tools,Parts,Employees (comma
   // separated) — used by the tablet app's startup load. Web app requests
   // aren't truly concurrent even when the client fires them in parallel, so
@@ -195,6 +226,27 @@ function doPost(e) {
   var sheetName = body.sheet;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(sheetName);
+
+  // ---- delete whole tabs by exact name (body.names: [...]) — narrower and
+  // safer than "cleanup" below: only deletes tabs explicitly named, never
+  // touches columns on any other tab. Used to remove confirmed-stale tabs
+  // (e.g. ScheduleMarks/ScheduleActivities, leftover from an earlier design
+  // before the tablet app switched to sharing the dashboard's "Schedule"
+  // tab) without any risk to the rest of the spreadsheet. ----
+  if (action === "delete_sheets") {
+    var names2 = body.names || [];
+    var deletedSheets2 = [];
+    var skipped2 = [];
+    names2.forEach(function (name) {
+      var sh = ss.getSheetByName(name);
+      if (!sh) { skipped2.push(name + " (not found)"); return; }
+      if (ss.getSheets().length <= 1) { skipped2.push(name + " (last remaining sheet)"); return; }
+      ss.deleteSheet(sh);
+      deletedSheets2.push(name);
+    });
+    SpreadsheetApp.flush();
+    return json({ ok: true, deleted: deletedSheets2, skipped: skipped2 });
+  }
 
   // ---- delete every row whose key column matches key_value ----
   if (action === "delete") {
