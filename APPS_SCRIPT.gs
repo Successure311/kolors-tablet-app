@@ -101,6 +101,23 @@
  * before the Schedule-tab-sharing change above) — unlike "cleanup", it
  * never touches columns on any other tab, so it's safe to run without
  * re-auditing the whole schema first.
+ *
+ * What changed since then: fixed the same "Sheets auto-converts a
+ * date-shaped value into a real Date" corruption already handled for
+ * Schedule's per-day HEADER columns above, this time on three Tools DATA
+ * columns: ProjectStartDate, ScheduleRangeStart, ScheduleRangeEnd. Each is
+ * only ever written as a plain "yyyy-MM-dd" from an <input type="date">, but
+ * once Sheets silently turns that into a Date cell, JSON.stringify(Date)
+ * emits a full UTC datetime like "2026-09-03T18:30:00.000Z" — which then
+ * fails to populate an <input type="date"> at all, so re-selecting a die
+ * silently fell back to today's date instead of its actual saved Plan
+ * range, and the read-only project header showed that raw ISO string
+ * instead of a clean date. Fixed the same two ways as before: DATE_ONLY_
+ * FIELDS + dateOnlyValue() normalise these three fields back to
+ * "yyyy-MM-dd" on every read, and forceTextFormatIfDate() now also locks
+ * them to Plain Text format on every write so Sheets can't re-convert them.
+ * A one-time "repair_tools_dates" action (dry-run by default, same pattern
+ * as "repair_schedule") fixes cells already corrupted this way.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -126,6 +143,18 @@ var SCHEMA = {
 
 var DATE_HEADER_RE = /^\d{2}-\d{2}-\d{4}$/;
 
+// Field names (any tab) that only ever hold a plain "yyyy-MM-dd" value from
+// an <input type="date">, never a date+time. Same auto-conversion problem
+// as DATE_HEADER_RE below, but on a DATA cell instead of a header cell: type
+// "2026-09-04" into one of these columns and Sheets can silently store it as
+// a real Date instead of text. Left alone, JSON.stringify(Date) — used by
+// json() below — turns that into a full UTC datetime string like
+// "2026-09-03T18:30:00.000Z" (IST midnight the next day, shifted a day
+// earlier by the UTC conversion), which then fails to populate an
+// <input type="date"> (wrong format) and displays as raw ISO junk anywhere
+// shown as text.
+var DATE_ONLY_FIELDS = ["ProjectStartDate", "ScheduleRangeStart", "ScheduleRangeEnd"];
+
 // Normalises one header cell to the text form every comparison/lookup below
 // expects. A date-shaped header (e.g. "09-11-2026") can get silently
 // auto-converted by Sheets from plain text into a real Date value — left
@@ -143,12 +172,23 @@ function headerRow(sheet) {
   return sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(headerKey);
 }
 
-// Sets a newly-created date-shaped header column to Plain Text number
-// format so Sheets can't re-auto-convert it back into a real Date later —
-// the root cause of the corruption headerKey() otherwise has to work around
-// on every read.
+// Normalises one DATE_ONLY_FIELDS data cell the same way headerKey() does
+// for header cells — a Date value becomes plain "yyyy-MM-dd" text, anything
+// else (already text, or blank) passes through unchanged.
+function dateOnlyValue(v) {
+  if (Object.prototype.toString.call(v) === "[object Date]") {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  }
+  return v;
+}
+
+// Sets a column to Plain Text number format so Sheets can't re-auto-convert
+// typed values back into a real Date later — the root cause both headerKey()
+// and dateOnlyValue() otherwise have to work around on every read. Covers
+// both kinds of corruption: a date-shaped HEADER (Schedule's per-day
+// columns) and a known date-only DATA field (see DATE_ONLY_FIELDS above).
 function forceTextFormatIfDate(sheet, headerName, colIndex1Based) {
-  if (DATE_HEADER_RE.test(headerName)) {
+  if (DATE_HEADER_RE.test(headerName) || DATE_ONLY_FIELDS.indexOf(headerName) >= 0) {
     sheet.getRange(1, colIndex1Based, sheet.getMaxRows(), 1).setNumberFormat("@");
   }
 }
@@ -171,7 +211,7 @@ function readSheetRows(ss, sheetName) {
   for (var i = 1; i < data.length; i++) {
     var row = {};
     for (var j = 0; j < headers.length; j++) {
-      row[headers[j]] = data[i][j];
+      row[headers[j]] = DATE_ONLY_FIELDS.indexOf(headers[j]) >= 0 ? dateOnlyValue(data[i][j]) : data[i][j];
     }
     rows.push(row);
   }
@@ -403,6 +443,50 @@ function doPost(e) {
     }
     SpreadsheetApp.flush();
     return json(summary);
+  }
+
+  // ---- one-time repair for the Tools tab's ProjectStartDate/
+  // ScheduleRangeStart/ScheduleRangeEnd corruption (see DATE_ONLY_FIELDS
+  // above): Sheets auto-converted these plain "yyyy-MM-dd" values into real
+  // Date cells, which then serialised as full UTC datetime strings like
+  // "2026-09-03T18:30:00.000Z" — that fails to populate an
+  // <input type="date"> at all, so the Schedule screen silently fell back to
+  // today's date instead of the die's actual saved plan range. Defaults to a
+  // DRY RUN — reports exactly which cells it would fix without writing
+  // anything; only an explicit {dryRun:false} applies it for real. ----
+  if (action === "repair_tools_dates") {
+    var toolsSheet = ss.getSheetByName("Tools");
+    if (!toolsSheet || toolsSheet.getLastRow() < 2) {
+      return json({ ok: true, message: "Tools tab is empty or missing — nothing to repair." });
+    }
+
+    var toolsHeaders = headerRow(toolsSheet);
+    var toolsData = toolsSheet.getDataRange().getValues();
+    var fixedCells = 0;
+    var fixedByField = {};
+
+    DATE_ONLY_FIELDS.forEach(function (field) {
+      var colIdx = toolsHeaders.indexOf(field);
+      if (colIdx < 0) return;
+      for (var r = 1; r < toolsData.length; r++) {
+        var cell = toolsData[r][colIdx];
+        if (Object.prototype.toString.call(cell) === "[object Date]") {
+          toolsData[r][colIdx] = dateOnlyValue(cell);
+          fixedCells++;
+          fixedByField[field] = (fixedByField[field] || 0) + 1;
+        }
+      }
+    });
+
+    var toolsSummary = { ok: true, dryRun: body.dryRun !== false, fixedCells: fixedCells, fixedByField: fixedByField };
+    if (toolsSummary.dryRun) return json(toolsSummary); // safe by default — preview only
+
+    if (fixedCells > 0) {
+      toolsSheet.getRange(2, 1, toolsData.length - 1, toolsHeaders.length).setValues(toolsData.slice(1));
+    }
+    toolsHeaders.forEach(function (h, idx) { forceTextFormatIfDate(toolsSheet, h, idx + 1); });
+    SpreadsheetApp.flush();
+    return json(toolsSummary);
   }
 
   // ---- remove all data rows, keeping the header row ----
