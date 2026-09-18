@@ -291,7 +291,6 @@ const toolMsg = $("tool-msg");
 toolForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(toolForm);
-  showMsg(toolMsg, t("common.saving"), true);
   try {
     const tool = await createTool({
       toolId: fd.get("tool_id"),
@@ -445,7 +444,6 @@ $("add-plates-btn").addEventListener("click", async () => {
   const checked = Array.from(plateCheckboxGrid.querySelectorAll("input:checked")).map((cb) => cb.value);
   const names = checked.concat(customPlateNames);
   if (!names.length) return showMsg(plateMsg, t("parts.selectAtLeastOnePlate"));
-  showMsg(plateMsg, t("common.saving"), true);
   try {
     const created = await addPartsBulk(toolId, names);
     showMsg(plateMsg, t("parts.platesAddedMsg", { count: created.length }), true);
@@ -603,7 +601,6 @@ $("add-schedule-btn").addEventListener("click", async () => {
   const toolId = partToolSelect.value;
   if (!toolId) return showMsg(scheduleAddMsg, t("schedule.addDieFirst"));
   if (!customScheduleNames.length) return showMsg(scheduleAddMsg, t("schedule.typeActivityNameFirst"));
-  showMsg(scheduleAddMsg, t("common.saving"), true);
   try {
     const created = await addScheduleBulk(toolId, customScheduleNames);
     showMsg(scheduleAddMsg, t("schedule.activitiesAddedMsg", { count: created.length }), true);
@@ -703,7 +700,6 @@ $("save-schedule-btn").addEventListener("click", async () => {
       if (cb.checked) marks[cb.dataset.date].push(activityId);
     });
   });
-  showMsg(scheduleMsg, t("common.saving"), true);
   try {
     await saveScheduleMarkRange(toolId, currentScheduleStart, currentScheduleEnd, marks);
     showMsg(scheduleMsg, t("schedule.savedAllMsg"), true);
@@ -811,7 +807,6 @@ $("save-child-parts-btn").addEventListener("click", async () => {
       return { name: nameInput.value.trim(), qty: parseInt(qtyInput.value || "1", 10) };
     })
     .filter((r) => r && r.name);
-  showMsg(childPartsMsg, t("common.saving"), true);
   try {
     const saved = await saveChildParts(toolId, rows);
     showMsg(childPartsMsg, t("childParts.savedMsg", { count: saved.length }), true);
@@ -971,7 +966,6 @@ employeeForm.addEventListener("submit", async (e) => {
   if (!machine) return showMsg(employeeMsg, t("employees.pickMachineOther"));
 
   const editingName = employeeForm.editing_name.value;
-  showMsg(employeeMsg, t("common.saving"), true);
   try {
     if (editingName) {
       const emp = await updateEmployee(editingName, { shift: fd.get("shift"), machine });
@@ -1562,7 +1556,6 @@ $("os-form").addEventListener("submit", async (e) => {
   const toolId = osToolSelect.value;
   const partId = osPartSelect.value;
   if (!toolId || !partId) return showMsg(osMsg, t("outsource.selectDiePartFirst"));
-  showMsg(osMsg, t("common.saving"), true);
   try {
     await startOutsource({
       toolId,
@@ -1610,7 +1603,6 @@ function refreshOutsourceOpenTable() {
 }
 
 async function markOutsourceReturned(entryId) {
-  showMsg($("wp-os-msg"), t("common.saving"), true);
   try {
     await stopOutsource(entryId);
     showMsg($("wp-os-msg"), "");

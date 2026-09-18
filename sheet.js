@@ -383,7 +383,10 @@ function listTools() {
 
 const findTool = (toolId) => store.tools.find((t) => String(t.ToolId) === String(toolId)) || null;
 
-async function createTool({ toolId, description, productName, typeOfProject, projectStartDate }) {
+// Instant, same as startOperation()/deletePart(): the new die (and its
+// seeded Schedule rows) show up on screen right away, and the sheet write
+// happens in the background, undone if it ultimately fails.
+function createTool({ toolId, description, productName, typeOfProject, projectStartDate }) {
   const id = (toolId || "").trim();
   if (!id) throw new Error("Die ID is required");
   if (!(description || "").trim()) throw new Error("Description is required");
@@ -410,12 +413,26 @@ async function createTool({ toolId, description, productName, typeOfProject, pro
     Activity: name,
     IsCustom: false,
   }));
-  await sheetBatch(
-    [{ sheet: "Tools", row, key_column: "ToolId" }].concat(
-      scheduleRows.map((r) => ({ sheet: "Schedule", row: r, key_column: "Id" }))
-    )
-  );
-  await Promise.all([reloadTools(), reloadScheduleActivities()]);
+
+  store.tools.push(row);
+  store.scheduleActivities = store.scheduleActivities.concat(scheduleRows);
+  saveCacheToLocalStorage();
+
+  (async () => {
+    try {
+      await sheetBatch(
+        [{ sheet: "Tools", row, key_column: "ToolId" }].concat(
+          scheduleRows.map((r) => ({ sheet: "Schedule", row: r, key_column: "Id" }))
+        )
+      );
+    } catch (err) {
+      store.tools = store.tools.filter((t) => t !== row);
+      store.scheduleActivities = store.scheduleActivities.filter((a) => !scheduleRows.includes(a));
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save new die ${id} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return row;
 }
 
@@ -637,14 +654,17 @@ function deletePart(partId) {
 }
 
 // Add several plates at once — one Part row each, same auto-generated
-// PartId scheme as addPart(), all pushed in ONE batch call.
-async function addPartsBulk(toolId, names) {
+// PartId scheme as addPart(), all pushed in ONE batch call. Instant, same as
+// startOperation()/deletePart(): the table updates right away and the sheet
+// write happens in the background, undone if it ultimately fails.
+function addPartsBulk(toolId, names) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
   const clean = (names || []).map((n) => (n || "").trim()).filter(Boolean);
   if (!clean.length) throw new Error("At least one plate name is required");
 
-  let seq = Number(tool.NextPartSeq || 1) || 1;
+  const startSeq = Number(tool.NextPartSeq || 1) || 1;
+  let seq = startSeq;
   const rows = clean.map((name) => {
     const row = {
       PartId: `${toolId}-P${pad(seq)}`,
@@ -662,47 +682,78 @@ async function addPartsBulk(toolId, names) {
     return row;
   });
 
-  await sheetBatch(
-    rows.map((row) => ({ sheet: "Parts", row, key_column: "PartId" })).concat([
-      { sheet: "Tools", row: { ...tool, NextPartSeq: seq }, key_column: "ToolId" },
-    ])
-  );
-  await Promise.all([reloadParts(), reloadTools()]);
+  store.parts = store.parts.concat(rows);
+  tool.NextPartSeq = seq;
+  saveCacheToLocalStorage();
+
+  (async () => {
+    try {
+      await sheetBatch(
+        rows.map((row) => ({ sheet: "Parts", row, key_column: "PartId" })).concat([
+          { sheet: "Tools", row: { ...tool }, key_column: "ToolId" },
+        ])
+      );
+    } catch (err) {
+      store.parts = store.parts.filter((p) => !rows.some((r) => r.PartId === p.PartId));
+      tool.NextPartSeq = startSeq;
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not add plates to ${toolId} in the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return rows;
 }
 
 // Save every inline-edited row of the parts table in one batch call. A row
 // whose newPartId differs from its partId is a rename (the auto-generated
 // Part ID typed over by hand) — handled separately via renamePart() since it
-// changes the sheet's key column, not just a batch-updatable field.
+// changes the sheet's key column, not just a batch-updatable field, so
+// (rare in practice) still waits on the network, same precedent as
+// renameTool(). Every plain (non-rename) edit is instant: the table updates
+// right away and the sheet write happens in the background, undone if it
+// ultimately fails.
 async function updatePartsBulk(edits) {
-  const rows = [];
+  const plainUpdates = [];
+  const before = [];
   const renames = [];
   (edits || []).forEach((e) => {
     const part = findPart(e.partId);
     if (!part) return;
-    const updated = {
-      ...part,
+    const fields = {
       Material: e.material != null ? String(e.material).trim() : part.Material,
       RoughSize: e.roughSize != null ? String(e.roughSize).trim() : part.RoughSize,
       Qty: e.qty != null ? Number(e.qty) || 1 : part.Qty,
-      CreatedAt: isoStamp(part.CreatedAt),
     };
     const newId = (e.newPartId || "").trim();
     if (newId && newId !== part.PartId) {
-      renames.push({ oldId: part.PartId, newId, fields: updated });
-    } else {
-      rows.push(updated);
+      renames.push({ oldId: part.PartId, newId, fields: { ...part, ...fields, CreatedAt: isoStamp(part.CreatedAt) } });
+      return;
     }
+    before.push({ ...part });
+    Object.assign(part, fields);
+    plainUpdates.push(part);
   });
-  if (rows.length) {
-    await sheetBatch(rows.map((row) => ({ sheet: "Parts", row, key_column: "PartId" })));
+
+  if (plainUpdates.length) {
+    saveCacheToLocalStorage();
+    (async () => {
+      try {
+        await sheetBatch(plainUpdates.map((row) => ({
+          sheet: "Parts", row: { ...row, CreatedAt: isoStamp(row.CreatedAt) }, key_column: "PartId",
+        })));
+      } catch (err) {
+        plainUpdates.forEach((p, i) => Object.assign(p, before[i]));
+        saveCacheToLocalStorage();
+        notifyBackgroundError(`Could not save part changes to the Google Sheet — undone. ${err.message}`);
+      }
+    })();
   }
+
+  const renamed = [];
   for (const r of renames) {
-    await renamePart(r.oldId, r.newId, r.fields);
+    renamed.push(await renamePart(r.oldId, r.newId, r.fields));
   }
-  await reloadParts();
-  return rows.concat(renames.map((r) => ({ ...r.fields, PartId: r.newId })));
+  return plainUpdates.concat(renamed);
 }
 
 // Change a Part's PartId, moving every row that references the old id
@@ -781,9 +832,11 @@ async function importChildPartsPreview(file) {
 
 // Replaces this die's entire Child Parts list with exactly the rows given —
 // whatever the operator currently has on screen (loaded rows, uploaded rows,
-// edits, deletions all merged into one list by the UI), mirroring PUT
-// /api/tools/{tool_id}/child-parts.
-async function saveChildParts(toolId, rows) {
+// edits, deletions all merged into one list by the UI). Instant, same as
+// deletePart()/addPartsBulk(): the table updates right away and the sheet
+// write (delete-all-then-recreate) happens in the background, undone if it
+// ultimately fails.
+function saveChildParts(toolId, rows) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
   const clean = (rows || [])
@@ -798,11 +851,23 @@ async function saveChildParts(toolId, rows) {
     ChildId: `${toolId}::${i + 1}::${Date.now()}`,
   }));
 
-  await sheetDelete("ChildParts", "ToolId", toolId);
-  if (built.length) {
-    await sheetBatch(built.map((row) => ({ sheet: "ChildParts", row, key_column: "ChildId" })));
-  }
-  await reloadChildParts();
+  const before = store.childParts;
+  store.childParts = before.filter((c) => String(c.ToolId) !== String(toolId)).concat(built);
+  saveCacheToLocalStorage();
+
+  (async () => {
+    try {
+      await sheetDelete("ChildParts", "ToolId", toolId);
+      if (built.length) {
+        await sheetBatch(built.map((row) => ({ sheet: "ChildParts", row, key_column: "ChildId" })));
+      }
+    } catch (err) {
+      store.childParts = before;
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save child parts for ${toolId} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return built;
 }
 
@@ -871,8 +936,10 @@ function listScheduleActivities(toolId) {
 // already present for this die (including the auto-seeded fixed ones) are
 // skipped rather than duplicated. Mirrors add_schedule_bulk() in
 // app/backend/main.py, minus the seq bookkeeping — order is derived at read
-// time instead (see listScheduleActivities() above).
-async function addScheduleBulk(toolId, names) {
+// time instead (see listScheduleActivities() above). Instant, same as
+// addPartsBulk(): the table updates right away and the sheet write happens
+// in the background, undone if it ultimately fails.
+function addScheduleBulk(toolId, names) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
   const clean = (names || []).map((n) => (n || "").trim()).filter(Boolean);
@@ -893,14 +960,39 @@ async function addScheduleBulk(toolId, names) {
   });
   if (!created.length) return [];
 
-  await sheetBatch(created.map((row) => ({ sheet: "Schedule", row, key_column: "Id" })));
-  await reloadScheduleActivities();
+  store.scheduleActivities = store.scheduleActivities.concat(created);
+  saveCacheToLocalStorage();
+
+  (async () => {
+    try {
+      await sheetBatch(created.map((row) => ({ sheet: "Schedule", row, key_column: "Id" })));
+    } catch (err) {
+      store.scheduleActivities = store.scheduleActivities.filter((a) => !created.includes(a));
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not add schedule activities for ${toolId} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return created;
 }
 
-async function deleteScheduleActivity(id) {
-  await sheetDelete("Schedule", "Id", id);
-  await reloadScheduleActivities();
+// Instant, same as deletePart()/deleteEmployee(): removed from the screen
+// right away, and the sheet delete happens in the background, undone if it
+// ultimately fails.
+function deleteScheduleActivity(id) {
+  const snapshot = store.scheduleActivities.filter((a) => String(a.Id) === String(id));
+  store.scheduleActivities = store.scheduleActivities.filter((a) => String(a.Id) !== String(id));
+  saveCacheToLocalStorage();
+
+  (async () => {
+    try {
+      await sheetDelete("Schedule", "Id", id);
+    } catch (err) {
+      store.scheduleActivities = store.scheduleActivities.concat(snapshot);
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not delete schedule activity from the Google Sheet — undone. ${err.message}`);
+    }
+  })();
 }
 
 // Every schedule activity for this die, each annotated with its Plan mark
@@ -935,14 +1027,16 @@ function scheduleRange(toolId, start, end) {
 // (every Plan-date column already known locally, not just the one changed)
 // so a slow-to-redeploy Apps Script can never blank out other dates by
 // treating an omitted column as "clear this" instead of "unchanged" — see
-// the APPS_SCRIPT.gs file header for the full story. Also remembers the
-// range on the Tool row so reopening this die later shows the same range
-// again (see refreshScheduleRange() in app.js).
-async function saveScheduleMarkRange(toolId, start, end, marksByDate) {
+// the APPS_SCRIPT.gs file header for the full story. Instant, same as
+// updatePartStatus(): the grid and the Tool's remembered range update right
+// away, and the sheet write happens in the background, undone if it
+// ultimately fails.
+function saveScheduleMarkRange(toolId, start, end, marksByDate) {
   const tool = findTool(toolId);
   if (!tool) throw new Error("Die not found");
   const activities = listScheduleActivities(toolId);
   const changedActivities = new Set();
+  const beforeByActivity = new Map(); // activity -> {changedKey: oldValue, ...}
 
   Object.keys(marksByDate).forEach((iso) => {
     const checkedIds = new Set((marksByDate[iso] || []).map(String));
@@ -951,17 +1045,31 @@ async function saveScheduleMarkRange(toolId, start, end, marksByDate) {
       const shouldBePlanned = checkedIds.has(String(activity.Id));
       const alreadyPlanned = activity[key] === "P";
       if (shouldBePlanned === alreadyPlanned) return;
+      if (!beforeByActivity.has(activity)) beforeByActivity.set(activity, {});
+      beforeByActivity.get(activity)[key] = activity[key];
       activity[key] = shouldBePlanned ? "P" : "";
       changedActivities.add(activity);
     });
   });
 
-  const items = Array.from(changedActivities).map((row) => ({ sheet: "Schedule", row, key_column: "Id" }));
-  items.push({ sheet: "Tools", row: { ...tool, ScheduleRangeStart: start, ScheduleRangeEnd: end }, key_column: "ToolId" });
-  await sheetBatch(items);
+  const beforeRange = { ScheduleRangeStart: tool.ScheduleRangeStart, ScheduleRangeEnd: tool.ScheduleRangeEnd };
   tool.ScheduleRangeStart = start;
   tool.ScheduleRangeEnd = end;
   saveCacheToLocalStorage();
+
+  const items = Array.from(changedActivities).map((row) => ({ sheet: "Schedule", row, key_column: "Id" }));
+  items.push({ sheet: "Tools", row: { ...tool }, key_column: "ToolId" });
+
+  (async () => {
+    try {
+      await sheetBatch(items);
+    } catch (err) {
+      beforeByActivity.forEach((oldVals, activity) => Object.assign(activity, oldVals));
+      Object.assign(tool, beforeRange);
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save schedule changes for ${toolId} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
 }
 
 // ---------- outsource (send a part to an outside vendor) ----------
@@ -1108,7 +1216,10 @@ const findEmployee = (name) =>
 const employeesForStage = (stage) =>
   listEmployees().filter((e) => String(e.Machine || "") === String(stage || ""));
 
-async function createEmployee(name, shift, machine) {
+// Instant, same as updateEmployee()/deleteEmployee(): the new employee shows
+// up in the list right away and the sheet write happens in the background,
+// undone if it ultimately fails.
+function createEmployee(name, shift, machine) {
   const n = (name || "").trim();
   if (!n) throw new Error("Name is required");
   if (!SHIFTS.includes(shift)) throw new Error("Unknown shift");
@@ -1117,8 +1228,20 @@ async function createEmployee(name, shift, machine) {
   if (findEmployee(n)) throw new Error(`Employee ${n} already exists`);
   rememberCustomStage(m);
   const row = { Name: n, Shift: shift, Machine: m, CreatedAt: nowStamp() };
-  await sheetUpsert("Employees", row, "Name");
-  await reloadEmployees();
+
+  store.employees.push(row);
+  saveCacheToLocalStorage();
+
+  (async () => {
+    try {
+      await sheetUpsert("Employees", row, "Name");
+    } catch (err) {
+      store.employees = store.employees.filter((e) => e !== row);
+      saveCacheToLocalStorage();
+      notifyBackgroundError(`Could not save new employee ${n} to the Google Sheet — undone. ${err.message}`);
+    }
+  })();
+
   return row;
 }
 
