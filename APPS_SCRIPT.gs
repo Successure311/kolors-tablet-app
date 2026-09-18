@@ -172,12 +172,23 @@ function headerRow(sheet) {
   return sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(headerKey);
 }
 
+// A JSON.stringify(Date) value, e.g. "2026-09-03T18:30:00.000Z" — what a
+// corrupted Date cell looks like once it's round-tripped through this
+// script's own JSON response and been echoed back in a later write (e.g. a
+// client that cached the bad value before a fix landed, then pushed that
+// same tool object back unchanged on its next save).
+var ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
+
 // Normalises one DATE_ONLY_FIELDS data cell the same way headerKey() does
-// for header cells — a Date value becomes plain "yyyy-MM-dd" text, anything
-// else (already text, or blank) passes through unchanged.
+// for header cells — a Date value, OR a literal ISO-datetime STRING (see
+// ISO_DATETIME_RE above), becomes plain "yyyy-MM-dd" text; anything else
+// (already clean text, or blank) passes through unchanged.
 function dateOnlyValue(v) {
   if (Object.prototype.toString.call(v) === "[object Date]") {
     return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
+  }
+  if (typeof v === "string" && ISO_DATETIME_RE.test(v)) {
+    return Utilities.formatDate(new Date(v), Session.getScriptTimeZone(), "yyyy-MM-dd");
   }
   return v;
 }
@@ -470,8 +481,14 @@ function doPost(e) {
       if (colIdx < 0) return;
       for (var r = 1; r < toolsData.length; r++) {
         var cell = toolsData[r][colIdx];
-        if (Object.prototype.toString.call(cell) === "[object Date]") {
-          fixes.push({ colIdx: colIdx, rowIdx: r, value: dateOnlyValue(cell) });
+        var fixed = dateOnlyValue(cell);
+        // Catches both corruption forms: a real Date cell, or a literal
+        // ISO-datetime STRING (see ISO_DATETIME_RE) — the latter happens
+        // when a client cached the bad value before this fix landed and
+        // echoed it straight back on its next save. Already-clean values
+        // (or blanks) round-trip unchanged, so this is always safe to run.
+        if (fixed !== cell) {
+          fixes.push({ colIdx: colIdx, rowIdx: r, value: fixed });
           fixedByField[field] = (fixedByField[field] || 0) + 1;
         }
       }
