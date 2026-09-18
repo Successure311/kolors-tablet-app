@@ -717,8 +717,21 @@ $("save-schedule-btn").addEventListener("click", async () => {
 // for it, per Tool.ScheduleRangeStart/End) and regenerates, so reopening an
 // existing die shows the same Plan table again instead of resetting to
 // today. Called whenever a different die is selected/created/deleted.
+//
+// Also backfills any of the 17 standard activities the die doesn't already
+// have — normally seeded once at creation (see createTool()), but a die
+// added before this feature existed (or one that had rows removed via the
+// per-row Delete button) would otherwise show a permanently empty "No
+// schedule activities added yet" table with no way to get the standard
+// checklist back from this screen. addScheduleBulk() already skips any name
+// already present, so this is a safe no-op for a die that's already fully
+// seeded — instant, and only touches the sheet if something was missing.
 function refreshScheduleRange() {
-  const tool = findTool(partToolSelect.value);
+  const toolId = partToolSelect.value;
+  if (toolId) {
+    try { addScheduleBulk(toolId, SCHEDULE_ACTIVITIES); } catch (_) { /* die not found yet — nothing to seed */ }
+  }
+  const tool = findTool(toolId);
   scheduleRangeStartInput.value = (tool && tool.ScheduleRangeStart) || "";
   scheduleRangeEndInput.value = (tool && tool.ScheduleRangeEnd) || "";
   generateSchedule();
