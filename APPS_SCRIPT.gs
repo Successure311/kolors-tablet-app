@@ -118,18 +118,6 @@
  * them to Plain Text format on every write so Sheets can't re-convert them.
  * A one-time "repair_tools_dates" action (dry-run by default, same pattern
  * as "repair_schedule") fixes cells already corrupted this way.
- *
- * What changed since then: Schedule's Plan-date columns now stay in
- * chronological order. Every new date column used to get appended at the
- * far right — correct (a header is matched by its text, never its
- * position) but unreadable as a left-to-right timeline, since the column
- * order just reflected "whichever order each date happened to be saved
- * in". sortDateColumns() reorders any tab's date-shaped columns
- * chronologically while leaving every other column exactly where it was;
- * "batch" (what Schedule saves actually go through) now applies it on
- * every write, so this can't recur. A one-time "sort_date_columns" action
- * (dry-run by default, defaults to the Schedule tab) fixes the order
- * already scrambled by earlier saves.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -214,34 +202,6 @@ function forceTextFormatIfDate(sheet, headerName, colIndex1Based) {
   if (DATE_HEADER_RE.test(headerName) || DATE_ONLY_FIELDS.indexOf(headerName) >= 0) {
     sheet.getRange(1, colIndex1Based, sheet.getMaxRows(), 1).setNumberFormat("@");
   }
-}
-
-// Reorders a tab's DATE-SHAPED columns (e.g. Schedule's per-day Plan
-// columns) into chronological order, leaving every other column exactly
-// where it already was. Without this, a newly-planned date always got
-// appended as a new column at the far right (see "batch" below) — so the
-// sheet's column order just reflected "whichever order each date happened
-// to be saved in" instead of reading left-to-right as a timeline. Correct
-// either way (a header is matched by its text, never its position), but
-// unreadable for a human looking at the raw sheet. Takes the full in-memory
-// {headers, data} — data includes the header row as data[0] — and returns
-// a new {headers, data} with every row's cells permuted to match; returns
-// the SAME objects unchanged if the columns are already in order, so this
-// is a cheap no-op on every write except the rare one that needs it.
-function sortDateColumns(headers, data) {
-  var indexed = headers.map(function (h, i) {
-    var isDate = DATE_HEADER_RE.test(h);
-    return { h: h, i: i, dateKey: isDate ? h.split("-").reverse().join("") : null };
-  });
-  var nonDate = indexed.filter(function (x) { return x.dateKey === null; });
-  var dated = indexed.filter(function (x) { return x.dateKey !== null; }).sort(function (a, b) {
-    return a.dateKey < b.dateKey ? -1 : a.dateKey > b.dateKey ? 1 : 0;
-  });
-  var order = nonDate.concat(dated);
-  if (order.every(function (x, newIdx) { return x.i === newIdx; })) return { headers: headers, data: data };
-  var newHeaders = order.map(function (x) { return x.h; });
-  var newData = data.map(function (row) { return order.map(function (x) { return row[x.i]; }); });
-  return { headers: newHeaders, data: newData };
 }
 
 function json(obj) {
@@ -553,39 +513,6 @@ function doPost(e) {
     return json(toolsSummary);
   }
 
-  // ---- one-time cleanup for the Schedule tab's Plan-date column order:
-  // every date column so far got appended at the far right in "whichever
-  // order it happened to be saved" order (see sortDateColumns() above and
-  // the fix to "batch" below), instead of reading left-to-right as a
-  // timeline. Reorders any tab's date-shaped columns chronologically,
-  // defaulting to "Schedule" since that's the one this actually affects.
-  // Defaults to a DRY RUN — reports the before/after column order without
-  // writing anything; only an explicit {dryRun:false} applies it. ----
-  if (action === "sort_date_columns") {
-    var sortTarget = ss.getSheetByName(body.sheet || "Schedule");
-    if (!sortTarget || sortTarget.getLastRow() < 1) {
-      return json({ ok: true, message: "Tab is empty or missing — nothing to sort." });
-    }
-    var rawHeaders = headerRow(sortTarget);
-    var rawData = sortTarget.getDataRange().getValues();
-    rawData[0] = rawHeaders;
-    var sortedCols = sortDateColumns(rawHeaders, rawData);
-    var sortSummary = {
-      ok: true,
-      dryRun: body.dryRun !== false,
-      alreadySorted: sortedCols.headers === rawHeaders,
-      before: rawHeaders,
-      after: sortedCols.headers,
-    };
-    if (sortSummary.dryRun || sortSummary.alreadySorted) return json(sortSummary); // safe by default — preview only
-
-    sortTarget.clearContents();
-    sortedCols.headers.forEach(function (h, idx) { forceTextFormatIfDate(sortTarget, h, idx + 1); });
-    sortTarget.getRange(1, 1, sortedCols.data.length, sortedCols.headers.length).setValues(sortedCols.data);
-    SpreadsheetApp.flush();
-    return json(sortSummary);
-  }
-
   // ---- remove all data rows, keeping the header row ----
   if (action === "clear") {
     if (!sheet) return json({ ok: true, cleared: 0 });
@@ -664,10 +591,9 @@ function doPost(e) {
     Object.keys(cache).forEach(function (name) {
       var c = cache[name];
       if (!c.data.length) return;
-      var sorted = sortDateColumns(c.headers, c.data);
       c.sheet.clearContents();
-      sorted.headers.forEach(function (h, idx) { forceTextFormatIfDate(c.sheet, h, idx + 1); });
-      c.sheet.getRange(1, 1, sorted.data.length, sorted.headers.length).setValues(sorted.data);
+      c.headers.forEach(function (h, idx) { forceTextFormatIfDate(c.sheet, h, idx + 1); });
+      c.sheet.getRange(1, 1, c.data.length, c.headers.length).setValues(c.data);
     });
 
     SpreadsheetApp.flush();
