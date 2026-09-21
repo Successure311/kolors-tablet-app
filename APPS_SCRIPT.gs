@@ -138,6 +138,21 @@
  *      Without "since" the old response shape is unchanged. Hand edits made
  *      directly in the Sheet don't bump it; tablets force a full read every
  *      minute to cover that.
+ *  (7) Schedule Ids are plain numbers 1, 2, 3 ... (assigned by the script under
+ *      the lock, so they can't collide) instead of per-die "T-1789...-abc"
+ *      strings. Run tidySchedule() once from the editor to renumber the rows
+ *      already in the tab and sort the date columns.
+ *  (6) Schedule tab: date columns are kept in calendar order (oldest ->
+ *      newest, after the ToolId/DieName/Activity/IsCustom/Id columns). Any
+ *      Schedule save fixes an out-of-order tab automatically; to fix it right
+ *      now run sortScheduleColumns() once from the editor.
+ *  (5) PartStatus mirror: every tablet Start/Stop/Restart/Send-out/Return now
+ *      updates the (Part, Department) row in PartStatus in the same request
+ *      (it used to be written only by the desktop dashboard, so it never
+ *      moved for tablet work). New parts get a Pending row per department;
+ *      deleting / renaming / resetting keeps it consistent. After deploying,
+ *      run rebuildPartStatus() once from the editor to fill in / correct the
+ *      tab from the current Parts + Operations data.
  *  (4) batch no longer clearContents()+rewrites the whole tab: it writes only
  *      the rows it actually changed, and only re-applies Plain Text format to
  *      columns that are new instead of to every column on every call.
@@ -304,6 +319,7 @@ function upsertRow(sheet, row, keyColumn, insertOnly) {
       headers = headers.concat(newKeys);
       sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
       newKeys.forEach(function (h, i) { forceTextFormatIfDate(sheet, h, startIdx + i + 1); });
+      if (sheet.getName() === "Schedule" && sortScheduleSheet(sheet)) headers = headerRow(sheet);
     }
   }
 
@@ -341,6 +357,536 @@ function upsertRow(sheet, row, keyColumn, insertOnly) {
   } else {
     sheet.appendRow(values);
   }
+}
+
+// ===================== Schedule column order =====================
+// The Schedule tab gets one column per Plan date ("dd-MM-yyyy"), added at the
+// far right whenever a new date is first planned — so they end up in the
+// order they were first used (17-09, 09-12, 09-11, 21-09, 04-09 ...), not in
+// calendar order. These keep the identity columns (ToolId, DieName, Activity,
+// IsCustom, Id, ...) first, in their existing order, followed by every date
+// column sorted oldest -> newest. Sorting is by the real date (year, month,
+// day), not by the text. Nothing else about the tab changes; the app finds
+// columns by header name, so moving them is safe.
+function scheduleColumnOrder(headers) {
+  var idCols = [], dateCols = [];
+  headers.forEach(function (h, i) { (DATE_HEADER_RE.test(String(h)) ? dateCols : idCols).push(i); });
+  var key = function (i) { var h = String(headers[i]); return h.slice(6, 10) + h.slice(3, 5) + h.slice(0, 2); };
+  dateCols.sort(function (a, b) { return key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : a - b; });
+  var order = idCols.concat(dateCols);
+  return { order: order, identity: order.every(function (v, i) { return v === i; }) };
+}
+
+// Reorders the columns of the Schedule sheet in place. Returns true if it moved anything.
+function sortScheduleSheet(sheet) {
+  if (!sheet || sheet.getLastRow() < 1) return false;
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0].map(headerKey);
+  var o = scheduleColumnOrder(headers);
+  if (o.identity) return false;
+  var newData = data.map(function (r, idx) {
+    return o.order.map(function (i) { return idx === 0 ? headers[i] : r[i]; });
+  });
+  // Plain Text BEFORE writing, so Sheets can't turn a "09-11-2026" header
+  // back into a real Date (see forceTextFormatIfDate).
+  newData[0].forEach(function (h, idx) { forceTextFormatIfDate(sheet, h, idx + 1); });
+  sheet.getRange(1, 1, newData.length, newData[0].length).setValues(newData);
+  return true;
+}
+
+// Runnable straight from the Apps Script editor (Run > sortScheduleColumns).
+function sortScheduleColumns() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var moved = sortScheduleSheet(SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Schedule"));
+    SpreadsheetApp.flush();
+    bumpVersion();
+    return moved;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ===================== Schedule numeric Ids =====================
+// Schedule rows are identified by a plain running number (1, 2, 3 ... across
+// the whole tab), assigned HERE on the server under the script lock — so two
+// tablets creating dies at the same moment can never receive the same number.
+// The tablet still invents a temporary "T-..." id locally (it needs one before
+// the server has answered); any non-numeric Id arriving in a batch is turned
+// into the next free number, or into the number of the row that already holds
+// the same die + activity (so a retried / stale request lands on the right row
+// instead of creating a duplicate). The mapping is sent back as "idMap".
+var SCHEDULE_ACTIVITIES = [
+  "Design Release Date", "PR Release Date", "PR Release Date of STD Part",
+  "PO Release Date", "Raw Material Cutting", "Sizing/Rough CNC",
+  "Surface Grinding", "Chamfering & Tapping", "Heat Treatment",
+  "Finishing CNC", "Wire Cutting", "EDM",
+  "STD Elements Received Date By Store", "Assembly", "Tool Trial-1",
+  "Tool Trial-2", "If Modification"
+];
+var NUMERIC_ID_RE = /^\d+$/;
+
+// c = applyBatch's cached tab {headers, data, maxNum?}. Returns the Id the row
+// should be stored under.
+function scheduleNumericId(c, row) {
+  var idIdx = c.headers.indexOf("Id"), tIdx = c.headers.indexOf("ToolId"), aIdx = c.headers.indexOf("Activity");
+  if (idIdx < 0) return row.Id;
+  if (c.maxNum === undefined) {
+    c.maxNum = 0;
+    for (var m = 1; m < c.data.length; m++) {
+      var mv = String(c.data[m][idIdx]);
+      if (NUMERIC_ID_RE.test(mv)) c.maxNum = Math.max(c.maxNum, Number(mv));
+    }
+  }
+  var wanted = String(row.Id);
+  var byActivity = null;
+  for (var i = 1; i < c.data.length; i++) {
+    if (String(c.data[i][idIdx]) === wanted) return row.Id; // a legacy row still carrying this id — leave it be
+    if (byActivity === null && tIdx >= 0 && aIdx >= 0 && row.ToolId !== undefined && row.Activity !== undefined &&
+        String(c.data[i][tIdx]) === String(row.ToolId) && String(c.data[i][aIdx]) === String(row.Activity)) {
+      byActivity = c.data[i][idIdx];
+    }
+  }
+  if (byActivity !== null && byActivity !== "") return byActivity;
+  c.maxNum += 1;
+  return c.maxNum;
+}
+
+// One-time tidy of the Schedule tab: every row whose Id is not a plain number
+// (the old "T-1789...-abc" ones) gets the next free number — dies in the order
+// they first appear, activities in the standard order — existing numeric Ids
+// are left exactly as they are, then all rows are sorted by Id, 1 to the end.
+function renumberSchedule_(ss) {
+  var sh = ss.getSheetByName("Schedule");
+  if (!sh || sh.getLastRow() < 2) return { ok: true, message: "Schedule tab is empty" };
+  var data = sh.getDataRange().getValues();
+  var headers = data[0].map(headerKey);
+  var idIdx = headers.indexOf("Id"), tIdx = headers.indexOf("ToolId"), aIdx = headers.indexOf("Activity");
+  if (idIdx < 0 || tIdx < 0 || aIdx < 0) return { error: "Schedule tab needs Id, ToolId and Activity columns" };
+
+  var rows = data.slice(1);
+  var seen = {}, maxNum = 0, legacy = [];
+  rows.forEach(function (r, i) {
+    var v = String(r[idIdx]);
+    if (NUMERIC_ID_RE.test(v) && !seen[v]) { seen[v] = true; maxNum = Math.max(maxNum, Number(v)); }
+    else legacy.push(i);
+  });
+
+  // Dies rank by where they FIRST appear in the tab (i.e. creation order).
+  var dieOrder = {};
+  rows.forEach(function (r) {
+    var t = String(r[tIdx]);
+    if (dieOrder[t] === undefined) dieOrder[t] = Object.keys(dieOrder).length;
+  });
+  legacy.sort(function (x, y) {
+    var dx = dieOrder[String(rows[x][tIdx])], dy = dieOrder[String(rows[y][tIdx])];
+    if (dx !== dy) return dx - dy;
+    var ax = SCHEDULE_ACTIVITIES.indexOf(String(rows[x][aIdx])); if (ax < 0) ax = 1000 + x;
+    var ay = SCHEDULE_ACTIVITIES.indexOf(String(rows[y][aIdx])); if (ay < 0) ay = 1000 + y;
+    return ax - ay;
+  });
+  legacy.forEach(function (i) { maxNum += 1; rows[i][idIdx] = maxNum; });
+
+  // Stable sort by numeric Id.
+  var order = rows.map(function (r, i) { return { r: r, i: i }; });
+  order.sort(function (x, y) { return (Number(x.r[idIdx]) - Number(y.r[idIdx])) || (x.i - y.i); });
+  var sorted = order.map(function (o) { return o.r; });
+
+  sh.getRange(2, 1, sorted.length, headers.length).setValues(sorted);
+  return { ok: true, rows: sorted.length, renumbered: legacy.length, lastId: maxNum };
+}
+
+// Runnable from the Apps Script editor (Run > renumberSchedule).
+function renumberSchedule() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var res = renumberSchedule_(SpreadsheetApp.getActiveSpreadsheet());
+    SpreadsheetApp.flush();
+    bumpVersion();
+    return res;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Run this ONE from the editor: numbers the Ids 1..end AND puts the date
+// columns in calendar order.
+function tidySchedule() {
+  var res = renumberSchedule();
+  res.columnsMoved = sortScheduleColumns();
+  return res;
+}
+
+// ===================== PartStatus mirror =====================
+// PartStatus = one row per (Part, Department) holding its CURRENT status
+// (Pending / Working / Waiting / Done), plus one "OutSource" row for a part
+// that has been sent out. It is what the desktop dashboard's backend keeps up
+// to date; the tablet app used to write only Operations, so PartStatus never
+// moved. Now every tablet Start/Stop/Restart/Send-out/Return updates its row
+// in the SAME request, new parts get a Pending row per department, and
+// deleting/renaming/resetting keeps it consistent. Key column: PartDept =
+// "<PartId>::<Department>" (same convention as the dashboard).
+var FIXED_STAGES = ["Turning", "Milling", "Grinding", "EDM", "Sparking", "VMC", "Wire Cut", "Heat Treatment", "Assembly"];
+
+function opStatusRow(o) {
+  return {
+    ToolId: o.ToolId, PartId: o.PartId, DieName: o.DieName, PartName: o.PartName,
+    Department: o.Department, Operator: o.Operator,
+    StartDate: o.StartDate, StartTime: o.StartTime, EndDate: o.EndDate, EndTime: o.EndTime,
+    Shift: o.Shift, Status: o.Status, WaitingCount: Number(o.WaitingCount) || 0,
+    PartDept: o.PartId + "::" + o.Department
+  };
+}
+
+function outsourceStatusRow(e) {
+  return {
+    ToolId: e.ToolId, PartId: e.PartId, DieName: e.DieName, PartName: e.PartName,
+    Department: "OutSource", Operator: "",
+    StartDate: e.StartDate, StartTime: e.StartTime, EndDate: e.EndDate, EndTime: e.EndTime,
+    Shift: "", Status: e.Status, WaitingCount: 0,
+    PartDept: e.PartId + "::OutSource"
+  };
+}
+
+function pendingStatusRow(part, dieName, stage) {
+  return {
+    ToolId: part.ToolId, PartId: part.PartId, DieName: dieName, PartName: part.Name,
+    Department: stage, Operator: "",
+    StartDate: "", StartTime: "", EndDate: "", EndTime: "",
+    Shift: "", Status: "Pending", WaitingCount: 0,
+    PartDept: part.PartId + "::" + stage
+  };
+}
+
+// The status mirror must never make the REAL write fail (the tablet would
+// undo an action that actually saved), so every mirror call swallows errors.
+function mirrorStatusRow(ss, row) {
+  try {
+    var sh = ss.getSheetByName("PartStatus");
+    if (!sh) sh = ss.insertSheet("PartStatus");
+    upsertRow(sh, row, "PartDept", false);
+  } catch (err) { /* mirror only */ }
+}
+
+function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+// "2:05:33 PM" / "14:05" -> "14:05:33" / "14:05:00". Time-only cells come back
+// from getValues() as 1899-dates whose clock is skewed by the old local-mean-
+// time offset, so times are read from the DISPLAYED text instead.
+function normTime(s) {
+  var m = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?\s*$/.exec(String(s));
+  if (!m) return String(s);
+  var h = Number(m[1]);
+  if (m[4]) {
+    var pm = m[4].toLowerCase() === "pm";
+    if (pm && h < 12) h += 12;
+    if (!pm && h === 12) h = 0;
+  }
+  return pad2(h) + ":" + m[2] + ":" + (m[3] || "00");
+}
+
+// Operations / OutsourceEntries rows with StartDate/EndDate as "yyyy-MM-dd"
+// and StartTime/EndTime as "HH:mm:ss" text, whatever the cells hold.
+function readStatusSource(ss, tab) {
+  var sh = ss.getSheetByName(tab);
+  if (!sh || sh.getLastRow() < 2) return [];
+  var rng = sh.getDataRange();
+  var vals = rng.getValues();
+  var disp = rng.getDisplayValues();
+  var headers = vals[0].map(headerKey);
+  var out = [];
+  for (var r = 1; r < vals.length; r++) {
+    var o = {};
+    for (var c = 0; c < headers.length; c++) {
+      var h = headers[c], v = vals[r][c];
+      if (h === "StartDate" || h === "EndDate") {
+        o[h] = Object.prototype.toString.call(v) === "[object Date]"
+          ? Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd") : String(v);
+      } else if (h === "StartTime" || h === "EndTime") {
+        o[h] = Object.prototype.toString.call(v) === "[object Date]" ? normTime(disp[r][c]) : String(v);
+      } else {
+        o[h] = v;
+      }
+    }
+    out.push(o);
+  }
+  return out;
+}
+
+function allStageNames(ss) {
+  var custom = readSheetRows(ss, "CustomStages").map(function (r) { return r.Name; })
+    .filter(function (n) { return n && FIXED_STAGES.indexOf(n) < 0; });
+  return FIXED_STAGES.concat(custom);
+}
+
+// Full PartStatus rows for the parts accepted by matchFn (all if null), for
+// every known department — Pending where nothing has happened, the latest
+// entry where it has — plus an OutSource row if the part was ever sent out.
+// onlyStages limits it to those departments (used when a brand-new
+// department appears and every existing part needs a Pending row for it).
+function buildPartStatusRows(ss, matchFn, onlyStages) {
+  var parts = readSheetRows(ss, "Parts");
+  var tools = {};
+  readSheetRows(ss, "Tools").forEach(function (t) { tools[String(t.ToolId)] = t; });
+  var stages = onlyStages || allStageNames(ss);
+
+  var latest = {}; // PartId -> Department -> newest Operations row
+  readStatusSource(ss, "Operations").forEach(function (o) {
+    var pid = String(o.PartId);
+    latest[pid] = latest[pid] || {};
+    var prev = latest[pid][o.Department];
+    var key = o.StartDate + " " + o.StartTime;
+    if (!prev || key >= prev.StartDate + " " + prev.StartTime) latest[pid][o.Department] = o;
+  });
+  var outs = {}; // PartId -> newest OutsourceEntries row
+  if (!onlyStages) {
+    readStatusSource(ss, "OutsourceEntries").forEach(function (e) {
+      var pid = String(e.PartId);
+      var prev = outs[pid];
+      if (!prev || e.StartDate + " " + e.StartTime >= prev.StartDate + " " + prev.StartTime) outs[pid] = e;
+    });
+  }
+
+  var rows = [];
+  parts.forEach(function (p) {
+    if (matchFn && !matchFn(p)) return;
+    var tool = tools[String(p.ToolId)];
+    var dieName = tool ? tool.Description : "";
+    var byStage = latest[String(p.PartId)] || {};
+    stages.forEach(function (st) {
+      var o = byStage[st];
+      if (o) {
+        var row = opStatusRow(o);
+        row.DieName = dieName || row.DieName; // the die's current name wins
+        rows.push(row);
+      } else {
+        rows.push(pendingStatusRow(p, dieName, st));
+      }
+    });
+    if (outs[String(p.PartId)]) {
+      var outRow = outsourceStatusRow(outs[String(p.PartId)]);
+      outRow.DieName = dieName || outRow.DieName;
+      rows.push(outRow);
+    }
+  });
+  return rows;
+}
+
+// Rewrites the WHOLE PartStatus tab from Parts + Operations + OutsourceEntries.
+// Used by the reset actions and by the one-time rebuild (run
+// rebuildPartStatus() from the Apps Script editor after deploying this).
+function rebuildPartStatus_(ss) {
+  var rows = buildPartStatusRows(ss, null, null);
+  var sh = ss.getSheetByName("PartStatus");
+  if (!sh) sh = ss.insertSheet("PartStatus");
+  sh.clearContents();
+  var cols = SCHEMA.PartStatus;
+  var data = [cols].concat(rows.map(function (r) {
+    return cols.map(function (h) { return r[h] !== undefined ? r[h] : ""; });
+  }));
+  sh.getRange(1, 1, data.length, cols.length).setValues(data);
+  return rows.length;
+}
+
+// Runnable straight from the Apps Script editor (Run > rebuildPartStatus).
+function rebuildPartStatus() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var n = rebuildPartStatus_(SpreadsheetApp.getActiveSpreadsheet());
+    bumpVersion();
+    return n;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Drops every PartStatus row whose column equals value (a part or die was
+// deleted). Rewrites the surviving rows in one go — deleting row by row would
+// take many seconds for a die with dozens of parts x departments.
+function removePartStatusWhere(ss, col, value) {
+  var sh = ss.getSheetByName("PartStatus");
+  if (!sh || sh.getLastRow() < 2) return;
+  var data = sh.getDataRange().getValues();
+  var ci = data[0].map(headerKey).indexOf(col);
+  if (ci < 0) return;
+  var kept = data.filter(function (r, i) { return i === 0 || String(r[ci]) !== String(value); });
+  if (kept.length === data.length) return;
+  sh.getRange(2, 1, data.length - 1, data[0].length).clearContent();
+  if (kept.length > 1) sh.getRange(2, 1, kept.length - 1, data[0].length).setValues(kept.slice(1));
+}
+
+// After a batch: refresh PartStatus for parts that are new / renamed / moved
+// to another die, for every part of a die whose description changed, and add a
+// Pending row per part for any brand-new department.
+function partStatusSyncFromHooks(ss, hooks) {
+  var partIds = Object.keys(hooks.parts), toolIds = Object.keys(hooks.tools), stages = Object.keys(hooks.stages);
+  if (!partIds.length && !toolIds.length && !stages.length) return;
+  try {
+    var items = [];
+    if (partIds.length || toolIds.length) {
+      buildPartStatusRows(ss, function (p) {
+        return hooks.parts[String(p.PartId)] || hooks.tools[String(p.ToolId)];
+      }, null).forEach(function (r) { items.push({ sheet: "PartStatus", row: r, key_column: "PartDept" }); });
+    }
+    if (stages.length) {
+      buildPartStatusRows(ss, null, stages).forEach(function (r) {
+        items.push({ sheet: "PartStatus", row: r, key_column: "PartDept" });
+      });
+    }
+    if (items.length) {
+      applyBatch(ss, items);
+      SpreadsheetApp.flush();
+    }
+  } catch (err) { /* mirror only */ }
+}
+
+// Applies many {sheet, row, key_column} upserts in memory and writes back only
+// what changed. Returns "hooks": the Parts/Tools/CustomStages changes the
+// PartStatus mirror needs to refresh (see partStatusSyncFromHooks).
+function applyBatch(ss, items) {
+  var hooks = { parts: {}, tools: {}, stages: {}, idMap: {} }; // what the PartStatus mirror must refresh afterwards
+  var cache = {}; // sheet name -> { sheet, headers, data (2D array incl. header row) }
+
+  items.forEach(function (item) {
+    var name = item.sheet;
+    if (!cache[name]) {
+      var sh = ss.getSheetByName(name);
+      if (!sh) sh = ss.insertSheet(name);
+      var data = sh.getLastRow() > 0 ? sh.getDataRange().getValues() : [];
+      if (data.length) data[0] = data[0].map(headerKey);
+      cache[name] = {
+        sheet: sh, headers: data.length ? data[0] : [], data: data,
+        origCols: data.length ? data[0].length : 0, // columns that already existed
+        full: false,      // true -> header/column layout changed, rewrite everything
+        changed: {},      // data-array index -> true, for rows touched
+      };
+    }
+    var c = cache[name];
+    var row = item.row;
+    var keyColumn = item.key_column;
+
+    if (c.headers.length === 0) {
+      c.headers = Object.keys(row);
+      c.data = [c.headers];
+      c.full = true;
+    } else {
+      // Additive: a field not already a column gets appended as a new
+      // one, padding every row already queued so the 2D array stays
+      // rectangular — never drops a field, never touches existing
+      // columns/rows/values otherwise.
+      var newKeys = Object.keys(row).filter(function (k) { return c.headers.indexOf(k) < 0; });
+      if (newKeys.length) {
+        c.headers = c.headers.concat(newKeys);
+        c.data = c.data.map(function (r, idx) {
+          if (idx === 0) return c.headers;
+          var padded = r.slice();
+          while (padded.length < c.headers.length) padded.push("");
+          return padded;
+        });
+        c.full = true;
+      }
+    }
+    // Schedule: keep the date columns in calendar order (see above). Only does
+    // anything the first time an out-of-order tab is touched, or when this
+    // very batch just added a new date column.
+    if (name === "Schedule" && c.headers.length) {
+      var so = scheduleColumnOrder(c.headers);
+      if (!so.identity) {
+        var oldData = c.data;
+        c.headers = so.order.map(function (i) { return c.headers[i]; });
+        c.data = oldData.map(function (r, idx) {
+          return idx === 0 ? c.headers : so.order.map(function (i) { return r[i] !== undefined ? r[i] : ""; });
+        });
+        c.full = true;
+        c.reordered = true;
+      }
+    }
+    if (name === "Schedule" && row.Id !== undefined && !NUMERIC_ID_RE.test(String(row.Id))) {
+      var numericId = scheduleNumericId(c, row);
+      if (String(numericId) !== String(row.Id)) {
+        hooks.idMap[row.Id] = numericId;
+        var withNumericId = {};
+        Object.keys(row).forEach(function (k) { withNumericId[k] = row[k]; });
+        withNumericId.Id = numericId;
+        row = withNumericId;
+      }
+    }
+    var values = c.headers.map(function (h) {
+      return row[h] !== undefined ? row[h] : "";
+    });
+
+    var foundIdx = -1;
+    if (keyColumn) {
+      var keyIdx = c.headers.indexOf(keyColumn);
+      for (var i = 1; i < c.data.length; i++) {
+        if (String(c.data[i][keyIdx]) === String(row[keyColumn])) {
+          foundIdx = i;
+          break;
+        }
+      }
+    }
+    if (foundIdx > 0) {
+      // Merge onto the existing row instead of replacing it outright — a
+      // caller that only sends a few changed fields (e.g. one Plan-mark
+      // date) must not blank every other column already recorded there.
+      var existingRow = c.data[foundIdx];
+      if (name === "Parts") {
+        var ptIdx = c.headers.indexOf("ToolId"), pnIdx = c.headers.indexOf("Name");
+        if ((row.ToolId !== undefined && String(existingRow[ptIdx]) !== String(row.ToolId)) ||
+            (row.Name !== undefined && String(existingRow[pnIdx]) !== String(row.Name))) hooks.parts[row.PartId] = true;
+      } else if (name === "Tools") {
+        var tdIdx = c.headers.indexOf("Description");
+        if (row.Description !== undefined && String(existingRow[tdIdx]) !== String(row.Description)) hooks.tools[row.ToolId] = true;
+      }
+      c.data[foundIdx] = c.headers.map(function (h, i) {
+        return row[h] !== undefined ? row[h] : existingRow[i];
+      });
+      c.changed[foundIdx] = true;
+    } else {
+      c.data.push(values);
+      c.changed[c.data.length - 1] = true;
+      if (name === "Parts") hooks.parts[row.PartId] = true;
+      else if (name === "CustomStages") hooks.stages[row.Name] = true;
+    }
+  });
+
+  // Write back ONLY what changed (was: clearContents + rewrite the whole
+  // tab, slow on big tabs and the reason batch needed a lock at all).
+  Object.keys(cache).forEach(function (name) {
+    var c = cache[name];
+    if (!c.data.length) return;
+
+    // Only brand-new columns need the Plain Text format applied — the
+    // ones that already existed were formatted when they were created.
+    for (var hi = c.reordered ? 0 : c.origCols; hi < c.headers.length; hi++) {
+      forceTextFormatIfDate(c.sheet, c.headers[hi], hi + 1);
+    }
+
+    if (c.full) {
+      c.sheet.getRange(1, 1, c.data.length, c.headers.length).setValues(c.data);
+      return;
+    }
+    var idxs = Object.keys(c.changed).map(Number).sort(function (a, b) { return a - b; });
+    if (!idxs.length) return;
+    // Group into runs of consecutive rows: one setValues per run.
+    var runs = [];
+    idxs.forEach(function (ix) {
+      var last = runs[runs.length - 1];
+      if (last && ix === last.end + 1) last.end = ix;
+      else runs.push({ start: ix, end: ix });
+    });
+    if (runs.length > 15) runs = [{ start: idxs[0], end: idxs[idxs.length - 1] }]; // few big writes beat many tiny ones
+    runs.forEach(function (r) {
+      c.sheet.getRange(r.start + 1, 1, r.end - r.start + 1, c.headers.length)
+        .setValues(c.data.slice(r.start, r.end + 1));
+    });
+  });
+
+
+  return hooks;
 }
 
 function doGet(e) {
@@ -445,6 +991,21 @@ function handlePost(body) {
     return json({ ok: true, deleted: deletedSheets2, skipped: skipped2 });
   }
 
+  // ---- number the Schedule tab's Ids 1..end and sort by them ----
+  if (action === "renumber_schedule") {
+    return json(renumberSchedule_(ss));
+  }
+
+  // ---- reorder the Schedule tab's date columns into calendar order ----
+  if (action === "sort_schedule_columns") {
+    return json({ ok: true, moved: sortScheduleSheet(ss.getSheetByName("Schedule")) });
+  }
+
+  // ---- rebuild the whole PartStatus tab from Parts/Operations/OutsourceEntries ----
+  if (action === "rebuild_part_status") {
+    return json({ ok: true, rows: rebuildPartStatus_(ss) });
+  }
+
   // ---- delete every row whose key column matches key_value ----
   if (action === "delete") {
     if (!sheet || sheet.getLastRow() < 2) return json({ ok: true, deleted: 0 });
@@ -460,6 +1021,10 @@ function handlePost(body) {
         sheet.deleteRow(d + 1);
         deleted++;
       }
+    }
+    if (deleted && ((sheetName === "Parts" && (body.key_column === "PartId" || body.key_column === "ToolId")) ||
+                    (sheetName === "Tools" && body.key_column === "ToolId"))) {
+      try { removePartStatusWhere(ss, body.key_column, body.key_value); } catch (err) { /* mirror only */ }
     }
     SpreadsheetApp.flush();
     return json({ ok: true, deleted: deleted });
@@ -664,6 +1229,11 @@ function handlePost(body) {
     if (!sheet) return json({ ok: true, cleared: 0 });
     var last = sheet.getLastRow();
     if (last > 1) sheet.deleteRows(2, last - 1);
+    // Resetting entries sends every part back to Pending in PartStatus (and
+    // drops the OutSource rows), same as the dashboard's reset.
+    if (sheetName === "Operations" || sheetName === "OutsourceEntries") {
+      try { rebuildPartStatus_(ss); } catch (err) { /* mirror only */ }
+    }
     SpreadsheetApp.flush();
     return json({ ok: true, cleared: Math.max(0, last - 1) });
   }
@@ -672,111 +1242,13 @@ function handlePost(body) {
   // writes each tab once instead of once per row, which is what actually
   // makes pushing a lot of rows individually slow ----
   if (action === "batch") {
-    var items = body.items || [];
-    var cache = {}; // sheet name -> { sheet, headers, data (2D array incl. header row) }
-
-    items.forEach(function (item) {
-      var name = item.sheet;
-      if (!cache[name]) {
-        var sh = ss.getSheetByName(name);
-        if (!sh) sh = ss.insertSheet(name);
-        var data = sh.getLastRow() > 0 ? sh.getDataRange().getValues() : [];
-        if (data.length) data[0] = data[0].map(headerKey);
-        cache[name] = {
-          sheet: sh, headers: data.length ? data[0] : [], data: data,
-          origCols: data.length ? data[0].length : 0, // columns that already existed
-          full: false,      // true -> header/column layout changed, rewrite everything
-          changed: {},      // data-array index -> true, for rows touched
-        };
-      }
-      var c = cache[name];
-      var row = item.row;
-      var keyColumn = item.key_column;
-
-      if (c.headers.length === 0) {
-        c.headers = Object.keys(row);
-        c.data = [c.headers];
-        c.full = true;
-      } else {
-        // Additive: a field not already a column gets appended as a new
-        // one, padding every row already queued so the 2D array stays
-        // rectangular — never drops a field, never touches existing
-        // columns/rows/values otherwise.
-        var newKeys = Object.keys(row).filter(function (k) { return c.headers.indexOf(k) < 0; });
-        if (newKeys.length) {
-          c.headers = c.headers.concat(newKeys);
-          c.data = c.data.map(function (r, idx) {
-            if (idx === 0) return c.headers;
-            var padded = r.slice();
-            while (padded.length < c.headers.length) padded.push("");
-            return padded;
-          });
-          c.full = true;
-        }
-      }
-      var values = c.headers.map(function (h) {
-        return row[h] !== undefined ? row[h] : "";
-      });
-
-      var foundIdx = -1;
-      if (keyColumn) {
-        var keyIdx = c.headers.indexOf(keyColumn);
-        for (var i = 1; i < c.data.length; i++) {
-          if (String(c.data[i][keyIdx]) === String(row[keyColumn])) {
-            foundIdx = i;
-            break;
-          }
-        }
-      }
-      if (foundIdx > 0) {
-        // Merge onto the existing row instead of replacing it outright — a
-        // caller that only sends a few changed fields (e.g. one Plan-mark
-        // date) must not blank every other column already recorded there.
-        var existingRow = c.data[foundIdx];
-        c.data[foundIdx] = c.headers.map(function (h, i) {
-          return row[h] !== undefined ? row[h] : existingRow[i];
-        });
-        c.changed[foundIdx] = true;
-      } else {
-        c.data.push(values);
-        c.changed[c.data.length - 1] = true;
-      }
-    });
-
-    // Write back ONLY what changed (was: clearContents + rewrite the whole
-    // tab, slow on big tabs and the reason batch needed a lock at all).
-    Object.keys(cache).forEach(function (name) {
-      var c = cache[name];
-      if (!c.data.length) return;
-
-      // Only brand-new columns need the Plain Text format applied — the
-      // ones that already existed were formatted when they were created.
-      for (var hi = c.origCols; hi < c.headers.length; hi++) {
-        forceTextFormatIfDate(c.sheet, c.headers[hi], hi + 1);
-      }
-
-      if (c.full) {
-        c.sheet.getRange(1, 1, c.data.length, c.headers.length).setValues(c.data);
-        return;
-      }
-      var idxs = Object.keys(c.changed).map(Number).sort(function (a, b) { return a - b; });
-      if (!idxs.length) return;
-      // Group into runs of consecutive rows: one setValues per run.
-      var runs = [];
-      idxs.forEach(function (ix) {
-        var last = runs[runs.length - 1];
-        if (last && ix === last.end + 1) last.end = ix;
-        else runs.push({ start: ix, end: ix });
-      });
-      if (runs.length > 15) runs = [{ start: idxs[0], end: idxs[idxs.length - 1] }]; // few big writes beat many tiny ones
-      runs.forEach(function (r) {
-        c.sheet.getRange(r.start + 1, 1, r.end - r.start + 1, c.headers.length)
-          .setValues(c.data.slice(r.start, r.end + 1));
-      });
-    });
-
+    var batchItems = body.items || [];
+    var batchHooks = applyBatch(ss, batchItems);
     SpreadsheetApp.flush();
-    return json({ ok: true, count: items.length });
+    partStatusSyncFromHooks(ss, batchHooks);
+    var batchReply = { ok: true, count: batchItems.length };
+    if (Object.keys(batchHooks.idMap).length) batchReply.idMap = batchHooks.idMap;
+    return json(batchReply);
   }
 
   // ---- atomic "start" for Operations/OutsourceEntries — runs under the
@@ -827,6 +1299,7 @@ function handlePost(body) {
     var startValues = sHeaders.map(function (h) { return startRow[h] !== undefined ? startRow[h] : ""; });
     sheet.appendRow(startValues);
     appendHistoryRow(ss, body.history);
+    mirrorStatusRow(ss, action === "start_operation" ? opStatusRow(startRow) : outsourceStatusRow(startRow));
     SpreadsheetApp.flush();
     return json({ ok: true });
   }
@@ -837,6 +1310,7 @@ function handlePost(body) {
     if (!sheet) sheet = ss.insertSheet(sheetName);
     upsertRow(sheet, body.row, body.key_column || "Id", false);
     appendHistoryRow(ss, body.history);
+    if (sheetName === "Operations") mirrorStatusRow(ss, opStatusRow(body.row));
     SpreadsheetApp.flush();
     return json({ ok: true });
   }
@@ -849,6 +1323,18 @@ function handlePost(body) {
   // must find and update the SAME row Start created.
   if (!sheet) sheet = ss.insertSheet(sheetName);
   upsertRow(sheet, body.row, body.key_column, !!body.insert_only);
+  // Returning a part from OutSource (a plain upsert of its entry) updates its
+  // OutSource status row.
+  if (sheetName === "OutsourceEntries" && body.row && body.row.PartId) {
+    mirrorStatusRow(ss, outsourceStatusRow(body.row));
+  }
   SpreadsheetApp.flush();
+  // A new department/machine typed via "Other…" (the tablet saves it with a
+  // plain upsert): every existing part needs a Pending row for it.
+  if (sheetName === "CustomStages" && body.row && body.row.Name) {
+    var stageHooks = { parts: {}, tools: {}, stages: {} };
+    stageHooks.stages[body.row.Name] = true;
+    partStatusSyncFromHooks(ss, stageHooks);
+  }
   return json({ ok: true });
 }

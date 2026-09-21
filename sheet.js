@@ -609,6 +609,7 @@ function createTool({ toolId, description, productName, typeOfProject, projectSt
     )
   ), {
     failMsg: `Could not save new die ${id} to the Google Sheet — undone.`,
+    onResult: applyScheduleIdMap,
     rollback: () => {
       store.tools = store.tools.filter((t) => t !== row);
       store.scheduleActivities = store.scheduleActivities.filter((a) => !scheduleRows.includes(a));
@@ -1061,6 +1062,23 @@ function saveChildParts(toolId, rows) {
 // creation (see createTool()); only custom ("Other") activities are ever
 // added by hand here.
 
+// A new schedule activity gets a temporary "T-..." id here (it's needed before
+// the sheet has answered). The script replaces it with the next plain number
+// (1, 2, 3 ... across the whole Schedule tab — see scheduleNumericId in
+// APPS_SCRIPT.gs) and sends the mapping back; this adopts the real number so
+// later saves/deletes use it. Until then the script matches a temporary id to
+// its row by die + activity, so nothing queued in between goes astray.
+function applyScheduleIdMap(out) {
+  const map = out && out.idMap;
+  if (!map) return;
+  let changed = false;
+  store.scheduleActivities.forEach((a) => {
+    const real = map[a.Id];
+    if (real !== undefined && String(real) !== String(a.Id)) { a.Id = real; changed = true; }
+  });
+  if (changed) saveCacheToLocalStorage();
+}
+
 const newScheduleActivityId = () => `T-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 // Older sheet data (or a network hiccup mid-write) can leave behind a stray
@@ -1144,6 +1162,7 @@ function addScheduleBulk(toolId, names) {
 
   queueWrite(batchPayload(created.map((row) => ({ sheet: "Schedule", row, key_column: "Id" }))), {
     failMsg: `Could not add schedule activities for ${toolId} to the Google Sheet — undone.`,
+    onResult: applyScheduleIdMap,
     rollback: () => {
       store.scheduleActivities = store.scheduleActivities.filter((a) => !created.includes(a));
       saveCacheToLocalStorage();
@@ -1237,6 +1256,7 @@ function saveScheduleMarkRange(toolId, start, end, marksByDate) {
 
   queueWrite(batchPayload(items), {
     failMsg: `Could not save schedule changes for ${toolId} to the Google Sheet — undone.`,
+    onResult: applyScheduleIdMap,
     rollback: () => {
       beforeByActivity.forEach((oldVals, activity) => Object.assign(activity, oldVals));
       Object.assign(tool, beforeRange);
