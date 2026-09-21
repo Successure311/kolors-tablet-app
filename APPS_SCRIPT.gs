@@ -118,6 +118,29 @@
  * them to Plain Text format on every write so Sheets can't re-convert them.
  * A one-time "repair_tools_dates" action (dry-run by default, same pattern
  * as "repair_schedule") fixes cells already corrupted this way.
+ *
+ * What changed since then (speed + safety pass, all backward compatible —
+ * the desktop dashboard's existing calls behave exactly as before):
+ *  (1) doPost now takes the script lock for EVERY write, so two devices
+ *      saving at the same moment can no longer overwrite each other (batch
+ *      used to read the whole tab, edit in memory and write it all back with
+ *      no lock at all). If the lock can't be had in 20 s it answers
+ *      {error, retryable:true} and the tablet just retries.
+ *  (2) start_operation/start_outsource accept an optional "history" row that
+ *      is appended to OperationHistory in the SAME execution, and a new
+ *      "op_update" action does the same for Stop/Restart (update the
+ *      Operations row by key + append history). One request per tap instead
+ *      of two sequential ones. A Start retried after a lost response is
+ *      recognised by its Id and answered ok instead of as a conflict.
+ *  (3) every write bumps a version counter (ScriptProperties "ver"). doGet
+ *      with ?sheets=A,B&since=N answers {v, unchanged:true} when nothing
+ *      changed, else {v, data:{A:rows,B:rows}} — so tablets can poll cheaply.
+ *      Without "since" the old response shape is unchanged. Hand edits made
+ *      directly in the Sheet don't bump it; tablets force a full read every
+ *      minute to cover that.
+ *  (4) batch no longer clearContents()+rewrites the whole tab: it writes only
+ *      the rows it actually changed, and only re-applies Plain Text format to
+ *      columns that are new instead of to every column on every call.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -229,8 +252,115 @@ function readSheetRows(ss, sheetName) {
   return rows;
 }
 
+function currentVersion() {
+  return Number(PropertiesService.getScriptProperties().getProperty("ver")) || 0;
+}
+
+function bumpVersion() {
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty("ver", String((Number(props.getProperty("ver")) || 0) + 1));
+}
+
+// Appends one row to OperationHistory (always added, never matched by key),
+// creating the tab / extending its header additively just like the default
+// upsert path does. Used to log an event in the same execution as the
+// Operations write it belongs to.
+function appendHistoryRow(ss, hist) {
+  if (!hist) return;
+  var sh = ss.getSheetByName("OperationHistory");
+  if (!sh) sh = ss.insertSheet("OperationHistory");
+  var headers;
+  if (sh.getLastRow() === 0) {
+    headers = Object.keys(hist);
+    sh.appendRow(headers);
+  } else {
+    headers = headerRow(sh);
+    var newKeys = Object.keys(hist).filter(function (k) { return headers.indexOf(k) < 0; });
+    if (newKeys.length) {
+      headers = headers.concat(newKeys);
+      sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+    }
+  }
+  sh.appendRow(headers.map(function (h) { return hist[h] !== undefined ? hist[h] : ""; }));
+}
+
+// Insert or update ONE row of `sheet` (already looked up/created by the
+// caller), matched on keyColumn — the "default" upsert, shared by the plain
+// upsert action and op_update.
+function upsertRow(sheet, row, keyColumn, insertOnly) {
+  var headers;
+  if (sheet.getLastRow() === 0) {
+    headers = Object.keys(row);
+    sheet.appendRow(headers);
+    headers.forEach(function (h, idx) { forceTextFormatIfDate(sheet, h, idx + 1); });
+  } else {
+    headers = headerRow(sheet);
+    // Additive: a field not already a column gets appended as a new one —
+    // only the header row is extended, existing data rows are untouched
+    // and just read as blank under the new column until they're written.
+    var newKeys = Object.keys(row).filter(function (k) { return headers.indexOf(k) < 0; });
+    if (newKeys.length) {
+      var startIdx = headers.length;
+      headers = headers.concat(newKeys);
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      newKeys.forEach(function (h, i) { forceTextFormatIfDate(sheet, h, startIdx + i + 1); });
+    }
+  }
+
+  var values = headers.map(function (h) {
+    return row[h] !== undefined ? row[h] : "";
+  });
+
+  if (insertOnly || !keyColumn) {
+    sheet.appendRow(values);
+    return;
+  }
+
+  // Only the key column is read to find the row, not every column of every
+  // row — much cheaper than getDataRange() on a wide, tall tab like
+  // Operations, and that read/scan is the main cost of a write.
+  var keyIdx = headers.indexOf(keyColumn);
+  var lastRow = sheet.getLastRow();
+  var foundRow = -1;
+  if (lastRow > 1) {
+    var keyVals = sheet.getRange(2, keyIdx + 1, lastRow - 1, 1).getValues();
+    for (var i = 0; i < keyVals.length; i++) {
+      if (String(keyVals[i][0]) === String(row[keyColumn])) {
+        foundRow = i + 2;
+        break;
+      }
+    }
+  }
+  if (foundRow > 0) {
+    // Merge onto the existing row instead of replacing it outright — a
+    // caller that only sends a few changed fields (e.g. one Plan-mark
+    // date) must not blank every other column already recorded there.
+    var existingValues = sheet.getRange(foundRow, 1, 1, headers.length).getValues()[0];
+    var merged = headers.map(function (h, i) { return row[h] !== undefined ? row[h] : existingValues[i]; });
+    sheet.getRange(foundRow, 1, 1, headers.length).setValues([merged]);
+  } else {
+    sheet.appendRow(values);
+  }
+}
+
 function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Versioned multi-tab read — ?sheets=A,B&since=N. Cheap "anything new?"
+  // poll: if the write counter still equals N nothing was written since, so
+  // answer {unchanged:true} without touching a single tab. The version is
+  // read BEFORE the data, so a write landing mid-read only makes the next
+  // poll refetch — it can never make a tablet miss a change.
+  if (e.parameter.sheets && e.parameter.since !== undefined) {
+    var ver = currentVersion();
+    if (String(e.parameter.since) === String(ver)) return json({ v: ver, unchanged: true });
+    var vNames = e.parameter.sheets.split(",");
+    var vOut = {};
+    for (var vn = 0; vn < vNames.length; vn++) {
+      vOut[vNames[vn]] = readSheetRows(ss, vNames[vn]);
+    }
+    return json({ v: ver, data: vOut });
+  }
 
   // Read-only inventory — ?list_sheets=1 — reports every tab's name, row/
   // column counts and header row, plus whether it's one SCHEMA/"cleanup"
@@ -271,8 +401,24 @@ function doGet(e) {
   return json(readSheetRows(ss, e.parameter.sheet));
 }
 
+// Every write goes through one script-wide lock, so read-modify-write actions
+// (batch, upsert, delete, ...) from different devices can't interleave and
+// silently overwrite each other. Each holds it only briefly.
 function doPost(e) {
   var body = JSON.parse(e.postData.contents);
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return json({ error: "Server busy — try again in a moment.", retryable: true });
+  }
+  try {
+    return handlePost(body);
+  } finally {
+    bumpVersion();
+    lock.releaseLock();
+  }
+}
+
+function handlePost(body) {
   var action = body.action || "upsert";
   var sheetName = body.sheet;
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -536,7 +682,12 @@ function doPost(e) {
         if (!sh) sh = ss.insertSheet(name);
         var data = sh.getLastRow() > 0 ? sh.getDataRange().getValues() : [];
         if (data.length) data[0] = data[0].map(headerKey);
-        cache[name] = { sheet: sh, headers: data.length ? data[0] : [], data: data };
+        cache[name] = {
+          sheet: sh, headers: data.length ? data[0] : [], data: data,
+          origCols: data.length ? data[0].length : 0, // columns that already existed
+          full: false,      // true -> header/column layout changed, rewrite everything
+          changed: {},      // data-array index -> true, for rows touched
+        };
       }
       var c = cache[name];
       var row = item.row;
@@ -545,6 +696,7 @@ function doPost(e) {
       if (c.headers.length === 0) {
         c.headers = Object.keys(row);
         c.data = [c.headers];
+        c.full = true;
       } else {
         // Additive: a field not already a column gets appended as a new
         // one, padding every row already queued so the 2D array stays
@@ -559,6 +711,7 @@ function doPost(e) {
             while (padded.length < c.headers.length) padded.push("");
             return padded;
           });
+          c.full = true;
         }
       }
       var values = c.headers.map(function (h) {
@@ -583,137 +736,119 @@ function doPost(e) {
         c.data[foundIdx] = c.headers.map(function (h, i) {
           return row[h] !== undefined ? row[h] : existingRow[i];
         });
+        c.changed[foundIdx] = true;
       } else {
         c.data.push(values);
+        c.changed[c.data.length - 1] = true;
       }
     });
 
+    // Write back ONLY what changed (was: clearContents + rewrite the whole
+    // tab, slow on big tabs and the reason batch needed a lock at all).
     Object.keys(cache).forEach(function (name) {
       var c = cache[name];
       if (!c.data.length) return;
-      c.sheet.clearContents();
-      c.headers.forEach(function (h, idx) { forceTextFormatIfDate(c.sheet, h, idx + 1); });
-      c.sheet.getRange(1, 1, c.data.length, c.headers.length).setValues(c.data);
+
+      // Only brand-new columns need the Plain Text format applied — the
+      // ones that already existed were formatted when they were created.
+      for (var hi = c.origCols; hi < c.headers.length; hi++) {
+        forceTextFormatIfDate(c.sheet, c.headers[hi], hi + 1);
+      }
+
+      if (c.full) {
+        c.sheet.getRange(1, 1, c.data.length, c.headers.length).setValues(c.data);
+        return;
+      }
+      var idxs = Object.keys(c.changed).map(Number).sort(function (a, b) { return a - b; });
+      if (!idxs.length) return;
+      // Group into runs of consecutive rows: one setValues per run.
+      var runs = [];
+      idxs.forEach(function (ix) {
+        var last = runs[runs.length - 1];
+        if (last && ix === last.end + 1) last.end = ix;
+        else runs.push({ start: ix, end: ix });
+      });
+      if (runs.length > 15) runs = [{ start: idxs[0], end: idxs[idxs.length - 1] }]; // few big writes beat many tiny ones
+      runs.forEach(function (r) {
+        c.sheet.getRange(r.start + 1, 1, r.end - r.start + 1, c.headers.length)
+          .setValues(c.data.slice(r.start, r.end + 1));
+      });
     });
 
     SpreadsheetApp.flush();
     return json({ ok: true, count: items.length });
   }
 
-  // ---- atomic "start" for Operations/OutsourceEntries — a script-wide lock
-  // makes the "is this part already open?" check and the append happen as
-  // one atomic step, so two devices racing to start the same part can't both
-  // win. Returns {ok:false, conflict:{...the existing open row...}} with
-  // nothing written if the part is already open; otherwise appends and
-  // returns {ok:true}, same shape as the default insert_only path below. ----
+  // ---- atomic "start" for Operations/OutsourceEntries — runs under the
+  // script-wide lock taken in doPost, so the "is this part already open?"
+  // check and the append are one atomic step and two devices racing to start
+  // the same part can't both win. Returns {ok:false, conflict:{...the
+  // existing open row...}} with nothing written if the part is already open;
+  // otherwise appends and returns {ok:true}. An optional body.history row is
+  // appended to OperationHistory in this same execution. A retried Start
+  // (response lost, tablet resent it) is recognised by its own Id already
+  // being in the tab and answered {ok:true} without writing a second row. ----
   if (action === "start_operation" || action === "start_outsource") {
     var startRow = body.row;
-    var lock = LockService.getScriptLock();
-    if (!lock.tryLock(10000)) return json({ error: "Server busy — try again in a moment." });
-    try {
-      var openStatuses = action === "start_operation" ? ["Working", "Waiting"] : ["OutSource"];
-      if (!sheet) sheet = ss.insertSheet(sheetName);
-      var sHeaders = sheet.getLastRow() > 0
-        ? headerRow(sheet)
-        : Object.keys(startRow);
-      var pIdx = sHeaders.indexOf("PartId");
-      var stIdx = sHeaders.indexOf("Status");
-      if (sheet.getLastRow() > 1 && pIdx >= 0 && stIdx >= 0) {
-        var existingRows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sHeaders.length).getValues();
-        for (var i = 0; i < existingRows.length; i++) {
-          if (String(existingRows[i][pIdx]) === String(startRow.PartId) &&
-              openStatuses.indexOf(String(existingRows[i][stIdx])) >= 0) {
-            var conflict = {};
-            sHeaders.forEach(function (h, idx) { conflict[h] = existingRows[i][idx]; });
-            return json({ ok: false, conflict: conflict });
-          }
+    var openStatuses = action === "start_operation" ? ["Working", "Waiting"] : ["OutSource"];
+    if (!sheet) sheet = ss.insertSheet(sheetName);
+    var sHeaders = sheet.getLastRow() > 0
+      ? headerRow(sheet)
+      : Object.keys(startRow);
+    var pIdx = sHeaders.indexOf("PartId");
+    var stIdx = sHeaders.indexOf("Status");
+    var idIdx = sHeaders.indexOf("Id");
+    if (sheet.getLastRow() > 1 && pIdx >= 0 && stIdx >= 0) {
+      var existingRows = sheet.getRange(2, 1, sheet.getLastRow() - 1, sHeaders.length).getValues();
+      var conflict = null;
+      for (var i = 0; i < existingRows.length; i++) {
+        if (idIdx >= 0 && startRow.Id !== undefined &&
+            String(existingRows[i][idIdx]) === String(startRow.Id)) {
+          return json({ ok: true }); // this exact Start was already saved
+        }
+        if (!conflict &&
+            String(existingRows[i][pIdx]) === String(startRow.PartId) &&
+            openStatuses.indexOf(String(existingRows[i][stIdx])) >= 0) {
+          conflict = {};
+          for (var ci = 0; ci < sHeaders.length; ci++) conflict[sHeaders[ci]] = existingRows[i][ci];
         }
       }
-      if (sheet.getLastRow() === 0) {
-        sheet.appendRow(sHeaders);
-      } else {
-        var newCols = Object.keys(startRow).filter(function (k) { return sHeaders.indexOf(k) < 0; });
-        if (newCols.length) {
-          sHeaders = sHeaders.concat(newCols);
-          sheet.getRange(1, 1, 1, sHeaders.length).setValues([sHeaders]);
-        }
-      }
-      var startValues = sHeaders.map(function (h) { return startRow[h] !== undefined ? startRow[h] : ""; });
-      sheet.appendRow(startValues);
-      SpreadsheetApp.flush();
-      return json({ ok: true });
-    } finally {
-      lock.releaseLock();
+      if (conflict) return json({ ok: false, conflict: conflict });
     }
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow(sHeaders);
+    } else {
+      var newCols = Object.keys(startRow).filter(function (k) { return sHeaders.indexOf(k) < 0; });
+      if (newCols.length) {
+        sHeaders = sHeaders.concat(newCols);
+        sheet.getRange(1, 1, 1, sHeaders.length).setValues([sHeaders]);
+      }
+    }
+    var startValues = sHeaders.map(function (h) { return startRow[h] !== undefined ? startRow[h] : ""; });
+    sheet.appendRow(startValues);
+    appendHistoryRow(ss, body.history);
+    SpreadsheetApp.flush();
+    return json({ ok: true });
+  }
+
+  // ---- Stop / Restart: update the Operations row by key, and log the
+  // matching OperationHistory event, in ONE execution (was two requests). ----
+  if (action === "op_update") {
+    if (!sheet) sheet = ss.insertSheet(sheetName);
+    upsertRow(sheet, body.row, body.key_column || "Id", false);
+    appendHistoryRow(ss, body.history);
+    SpreadsheetApp.flush();
+    return json({ ok: true });
   }
 
   // ---- default: insert or update one row ----
-  var row = body.row;
-  var keyColumn = body.key_column;
-  // Caller guarantees this key can't already exist (e.g. a freshly
-  // generated Id on Start/Send-out) — skips the scan below entirely and
-  // just appends. This is what keeps Start instant even once a tab has
-  // grown into thousands of rows; Stop/Restart/Return still need the scan
-  // since they must find and update the SAME row Start created.
-  var insertOnly = !!body.insert_only;
-
+  // insert_only: caller guarantees this key can't already exist (e.g. a
+  // freshly generated Id on Start/Send-out) — skips the key scan entirely and
+  // just appends, which keeps a write instant even once a tab has grown into
+  // thousands of rows; Stop/Restart/Return still need the scan since they
+  // must find and update the SAME row Start created.
   if (!sheet) sheet = ss.insertSheet(sheetName);
-
-  var headers;
-  if (sheet.getLastRow() === 0) {
-    headers = Object.keys(row);
-    sheet.appendRow(headers);
-    headers.forEach(function (h, idx) { forceTextFormatIfDate(sheet, h, idx + 1); });
-  } else {
-    headers = headerRow(sheet);
-    // Additive: a field not already a column gets appended as a new one —
-    // only the header row is extended, existing data rows are untouched
-    // and just read as blank under the new column until they're written.
-    var newKeys = Object.keys(row).filter(function (k) { return headers.indexOf(k) < 0; });
-    if (newKeys.length) {
-      var startIdx = headers.length;
-      headers = headers.concat(newKeys);
-      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-      newKeys.forEach(function (h, i) { forceTextFormatIfDate(sheet, h, startIdx + i + 1); });
-    }
-  }
-
-  var values = headers.map(function (h) {
-    return row[h] !== undefined ? row[h] : "";
-  });
-
-  if (insertOnly) {
-    sheet.appendRow(values);
-  } else if (keyColumn) {
-    // Only the key column is read to find the row, not every column of
-    // every row — much cheaper than getDataRange() on a wide, tall tab
-    // like Operations, and that read/scan is the main cost of a write.
-    var keyIdx = headers.indexOf(keyColumn);
-    var lastRow = sheet.getLastRow();
-    var foundRow = -1;
-    if (lastRow > 1) {
-      var keyVals = sheet.getRange(2, keyIdx + 1, lastRow - 1, 1).getValues();
-      for (var i = 0; i < keyVals.length; i++) {
-        if (String(keyVals[i][0]) === String(row[keyColumn])) {
-          foundRow = i + 2;
-          break;
-        }
-      }
-    }
-    if (foundRow > 0) {
-      // Merge onto the existing row instead of replacing it outright — a
-      // caller that only sends a few changed fields (e.g. one Plan-mark
-      // date) must not blank every other column already recorded there.
-      var existingValues = sheet.getRange(foundRow, 1, 1, headers.length).getValues()[0];
-      var merged = headers.map(function (h, i) { return row[h] !== undefined ? row[h] : existingValues[i]; });
-      sheet.getRange(foundRow, 1, 1, headers.length).setValues([merged]);
-    } else {
-      sheet.appendRow(values);
-    }
-  } else {
-    sheet.appendRow(values);
-  }
-
+  upsertRow(sheet, body.row, body.key_column, !!body.insert_only);
   SpreadsheetApp.flush();
   return json({ ok: true });
 }

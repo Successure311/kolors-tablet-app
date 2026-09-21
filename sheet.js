@@ -130,10 +130,17 @@ async function sheetFetch(url, options, what) {
     res = await fetch(url, { ...options, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch (err) {
     // fetch() only rejects on a network-level failure (or the timeout above),
-    // never on an HTTP error.
-    throw new Error(err.name === "TimeoutError" ? TIMEOUT_MESSAGE : OFFLINE_MESSAGE);
+    // never on an HTTP error. Flagged transient: the outbox below keeps a
+    // queued write and retries it instead of undoing it.
+    const e = new Error(err.name === "TimeoutError" ? TIMEOUT_MESSAGE : OFFLINE_MESSAGE);
+    e.transient = true;
+    throw e;
   }
-  if (!res.ok) throw new Error(`${what} failed (HTTP ${res.status}).`);
+  if (!res.ok) {
+    const e = new Error(`${what} failed (HTTP ${res.status}).`);
+    e.transient = res.status >= 500 || res.status === 429;
+    throw e;
+  }
   return res;
 }
 
@@ -175,6 +182,35 @@ async function sheetReadMany(tabs) {
   return result;
 }
 
+// Same as sheetReadMany but asks the script "anything changed since version
+// `since`?" (see ?since= in APPS_SCRIPT.gs). Resolves to
+//   { unchanged: true, v }                 nothing to download, or
+//   { v, data: {Tab: [rows...], ...} }     fresh data (v = null on an old,
+//                                          not-yet-redeployed script, which
+//                                          ignores ?since= and always returns
+//                                          the full data — still correct,
+//                                          just no saving).
+async function sheetReadManyVersioned(tabs, since) {
+  const res = await sheetFetch(
+    `${WEBAPP_URL}?sheets=${encodeURIComponent(tabs.join(","))}&since=${encodeURIComponent(since)}`,
+    undefined,
+    `Reading ${tabs.join(", ")}`
+  );
+  const out = (await readJson(res, `reading ${tabs.join(", ")}`)) || {};
+  if (Array.isArray(out)) {
+    throw new Error(
+      `The Google Sheet script rejected reading ${tabs.join(", ")}. It is probably the old ` +
+      `version — paste APPS_SCRIPT.gs into the sheet's Apps Script editor and ` +
+      `redeploy (Deploy > Manage deployments > pencil > New version).`
+    );
+  }
+  if (out.unchanged) return { unchanged: true, v: out.v };
+  const raw = out.data && typeof out.v === "number" ? out.data : out;
+  const data = {};
+  tabs.forEach((tab) => { data[tab] = (raw[tab] || []).map(normaliseRow); });
+  return { v: typeof out.v === "number" ? out.v : null, data };
+}
+
 // Sent as text/plain, NOT application/json: that keeps it a "simple" CORS
 // request so the browser skips the preflight OPTIONS an Apps Script Web App
 // doesn't answer. doPost JSON.parse()s the body either way.
@@ -189,33 +225,33 @@ async function sheetPost(payload) {
     "Saving"
   );
   const out = await readJson(res, "the save");
-  if (out && out.error) throw new Error(out.error);
+  if (out && out.error) {
+    const e = new Error(out.error);
+    e.transient = !!out.retryable; // e.g. "Server busy" — worth retrying
+    throw e;
+  }
   return out;
 }
 
-const sheetUpsert = (tab, row, keyColumn) =>
-  sheetPost({ sheet: tab, row, key_column: keyColumn });
+const upsertPayload = (tab, row, keyColumn) => ({ sheet: tab, row, key_column: keyColumn });
+const batchPayload = (items) => ({ action: "batch", items });
+const deletePayload = (tab, keyColumn, keyValue) =>
+  ({ action: "delete", sheet: tab, key_column: keyColumn, key_value: keyValue });
+const clearPayload = (tab) => ({ action: "clear", sheet: tab });
+
+const sheetUpsert = (tab, row, keyColumn) => sheetPost(upsertPayload(tab, row, keyColumn));
 
 // Atomic check-and-append on the server (APPS_SCRIPT.gs, under a script
 // lock) — used for Start/Send-out, where two devices could otherwise both
 // win the same part. Comes back {ok:false, conflict:{...}} instead of
 // writing a second open row if another device already started it a moment
 // earlier. See the doPost comment in APPS_SCRIPT.gs.
-const sheetStartOperation = (row) =>
-  sheetPost({ action: "start_operation", sheet: "Operations", row });
-
-const sheetStartOutsource = (row) =>
-  sheetPost({ action: "start_outsource", sheet: "OutsourceEntries", row });
-
-const sheetDelete = (tab, keyColumn, keyValue) =>
-  sheetPost({ action: "delete", sheet: tab, key_column: keyColumn, key_value: keyValue });
-
-const sheetClear = (tab) => sheetPost({ action: "clear", sheet: tab });
+const sheetDelete = (tab, keyColumn, keyValue) => sheetPost(deletePayload(tab, keyColumn, keyValue));
 
 // Many {sheet, row, key_column} upserts in ONE call — the Apps Script has
 // supported this all along (APPS_SCRIPT.gs "batch"), it just had no caller
 // on this side until bulk plate/part saves needed it.
-const sheetBatch = (items) => sheetPost({ action: "batch", items });
+const sheetBatch = (items) => sheetPost(batchPayload(items));
 
 // ---------- date/time ----------
 // Sheets returns date/time cells as ISO strings (they're Dates underneath) but
@@ -310,11 +346,157 @@ function loadCacheFromLocalStorage() {
   }
 }
 
+// ---------- outbox: every background write goes through here ----------
+// Start/Stop/etc. update the screen instantly, then push the write to the
+// sheet. Before, a failed push (no signal for a moment) UNDID the change and
+// the operator's work was gone. Now a network failure just keeps the write
+// queued and retries it — the change stays on screen, a small "N waiting to
+// sync" pill shows, and it goes through when the connection is back. Only a
+// real rejection by the server (or a conflict) undoes it, as before.
+//
+// One request at a time, in order — so a Stop can never overtake its own
+// Start. Queued items are also saved to localStorage, so closing/reloading
+// the app doesn't lose them (the rollback closure can't survive a reload; an
+// item that then fails for real just triggers a fresh full read instead).
+const OUTBOX_KEY = "kolors_outbox_v1";
+const OUTBOX_BACKOFF_MS = [2000, 5000, 15000, 30000];
+let outbox = [];              // {payload, label, failMsg, group, tries, rollback?, onResult?}
+let outboxPromise = null;     // the running flush, if any
+let outboxTimer = null;
+let outboxWaiting = false;    // a backoff retry is already scheduled
+let forceFullRead = false;    // next poll/refresh must download everything
+let outboxListener = () => {};
+const onOutboxChange = (fn) => { outboxListener = fn; };
+const outboxPending = () => outbox.length;
+
+function saveOutbox() {
+  try {
+    if (!outbox.length) localStorage.removeItem(OUTBOX_KEY);
+    else localStorage.setItem(OUTBOX_KEY, JSON.stringify(
+      outbox.map(({ payload, label, failMsg, group }) => ({ payload, label, failMsg, group }))
+    ));
+  } catch (_) { /* storage unavailable — queue still works for this session */ }
+  outboxListener(outbox.length);
+}
+
+function loadOutboxFromLocalStorage() {
+  try {
+    const raw = localStorage.getItem(OUTBOX_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (Array.isArray(saved)) outbox = saved.map((it) => ({ ...it, tries: 0 })).concat(outbox);
+    outboxListener(outbox.length);
+    if (outbox.length) flushOutbox();
+  } catch (_) { /* corrupt — ignore */ }
+}
+
+// options: label/failMsg (text for the error banner), group (a failure drops
+// the rest of the same group — e.g. a Start that failed for real takes its
+// own queued Stop with it), rollback() (undo the on-screen change),
+// onResult(out) (called with the server's answer, e.g. a Start conflict).
+function queueWrite(payload, { failMsg, group, rollback, onResult } = {}) {
+  outbox.push({ payload, failMsg: failMsg || "Could not save a change to the Google Sheet.", group: group || null, tries: 0, rollback, onResult });
+  saveOutbox();
+  // While a backoff retry is pending the connection is known to be down —
+  // don't hammer it (and reset the backoff) on every new tap; the scheduled
+  // retry, the "online" event, or the app coming back to the foreground
+  // will send everything, in order.
+  if (!outboxWaiting) flushOutbox();
+}
+
+function failOutboxItem(item, err) {
+  forceFullRead = true;
+  if (item.group) {
+    outbox = outbox.filter((o) => o.group !== item.group);
+    saveOutbox();
+  }
+  if (item.rollback) item.rollback();
+  else loadAll().catch(() => {}).then(() => notifyBackgroundError(`${item.failMsg} ${err.message}`));
+  if (item.rollback) notifyBackgroundError(`${item.failMsg} ${err.message}`);
+}
+
+function flushOutbox() {
+  if (outboxPromise) return outboxPromise;
+  clearTimeout(outboxTimer);
+  outboxWaiting = false;
+  outboxPromise = (async () => {
+    try {
+      while (outbox.length) {
+        const item = outbox[0];
+        let out;
+        try {
+          out = await sheetPost(item.payload);
+        } catch (err) {
+          if (err.transient) {
+            item.tries += 1;
+            outboxWaiting = true;
+            outboxTimer = setTimeout(flushOutbox, OUTBOX_BACKOFF_MS[Math.min(item.tries - 1, OUTBOX_BACKOFF_MS.length - 1)]);
+            return; // stays queued, on screen, retried later
+          }
+          outbox.shift();
+          saveOutbox();
+          failOutboxItem(item, err);
+          continue;
+        }
+        outbox.shift();
+        saveOutbox();
+        if (item.onResult) {
+          try { await item.onResult(out); } catch (_) { /* a handler bug must not wedge the queue */ }
+        }
+      }
+    } finally {
+      outboxPromise = null;
+      outboxListener(outbox.length);
+    }
+  })();
+  return outboxPromise;
+}
+
+// Waits (up to ms) for the queue to empty — used before anything that would
+// REPLACE the local data with what's in the sheet, so a change that hasn't
+// reached the sheet yet can't vanish from the screen.
+async function drainOutbox(ms = 8000) {
+  if (!outbox.length) return true;
+  await Promise.race([flushOutbox(), new Promise((r) => setTimeout(r, ms))]);
+  return !outbox.length;
+}
+
+window.addEventListener("online", () => { if (outbox.length) flushOutbox(); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && outbox.length) flushOutbox(); });
+
+// ---------- live version: lets a poll ask "anything new?" cheaply ----------
+let liveVersion = null;
+
+// One request for both fast-changing tabs (was one per tab). Returns true if
+// store.operations/outsourceEntries were replaced. `full` skips the "unchanged"
+// shortcut — used periodically because a hand edit made directly in the Sheet
+// does not bump the version.
+async function pollLive(full) {
+  if (outbox.length) { if (!outboxWaiting) flushOutbox(); return false; }
+  const since = full || forceFullRead || liveVersion === null ? -1 : liveVersion;
+  const res = await sheetReadManyVersioned(["Operations", "OutsourceEntries"], since);
+  if (res.unchanged) return false;
+  if (outbox.length) return false; // a write was queued mid-fetch — don't overwrite it
+  store.operations = res.data.Operations;
+  store.outsourceEntries = res.data.OutsourceEntries;
+  liveVersion = res.v;
+  forceFullRead = false;
+  saveCacheToLocalStorage();
+  return true;
+}
+
 async function loadAll() {
-  const data = await sheetReadMany([
+  // Never replace the screen's data while changes are still waiting to reach
+  // the sheet — they'd disappear until the queue catches up.
+  if (!(await drainOutbox())) return;
+  const res = await sheetReadManyVersioned([
     "Tools", "Parts", "Employees", "Operations", "CustomStages", "OutsourceEntries", "ChildParts",
     "Schedule",
-  ]);
+  ], -1);
+  if (outbox.length) return;
+  const data = res.data;
+  liveVersion = res.v;
+  forceFullRead = false;
   store.tools = data.Tools;
   store.parts = data.Parts;
   store.employees = data.Employees;
@@ -367,15 +549,13 @@ function rememberCustomStage(name) {
   store.customStages.push({ Name: n, CreatedAt: nowStamp() });
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetUpsert("CustomStages", { Name: n, CreatedAt: nowStamp() }, "Name");
-    } catch (err) {
+  queueWrite(upsertPayload("CustomStages", { Name: n, CreatedAt: nowStamp() }, "Name"), {
+    failMsg: `Could not save new department/machine "${n}" to the Google Sheet — undone.`,
+    rollback: () => {
       store.customStages = store.customStages.filter((c) => c.Name !== n);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save new department/machine "${n}" to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 }
 
 // ---------- tools ----------
@@ -423,20 +603,18 @@ function createTool({ toolId, description, productName, typeOfProject, projectSt
   store.scheduleActivities = store.scheduleActivities.concat(scheduleRows);
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetBatch(
-        [{ sheet: "Tools", row, key_column: "ToolId" }].concat(
-          scheduleRows.map((r) => ({ sheet: "Schedule", row: r, key_column: "Id" }))
-        )
-      );
-    } catch (err) {
+  queueWrite(batchPayload(
+    [{ sheet: "Tools", row, key_column: "ToolId" }].concat(
+      scheduleRows.map((r) => ({ sheet: "Schedule", row: r, key_column: "Id" }))
+    )
+  ), {
+    failMsg: `Could not save new die ${id} to the Google Sheet — undone.`,
+    rollback: () => {
       store.tools = store.tools.filter((t) => t !== row);
       store.scheduleActivities = store.scheduleActivities.filter((a) => !scheduleRows.includes(a));
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save new die ${id} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return row;
 }
@@ -489,26 +667,23 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
     saveCacheToLocalStorage();
   }
 
-  (async () => {
-    try {
-      const items = [{ sheet: "Tools", row: fields, key_column: "ToolId" }];
-      affectedOps.forEach((o) => items.push({ sheet: "Operations", row: o, key_column: "Id" }));
-      affectedOutsource.forEach((o) => items.push({ sheet: "OutsourceEntries", row: o, key_column: "Id" }));
-      affectedChildParts.forEach((c) => items.push({ sheet: "ChildParts", row: c, key_column: "ChildId" }));
-      if (items.length > 1) {
-        await sheetBatch(items);
-      } else {
-        await sheetUpsert("Tools", fields, "ToolId");
-      }
-    } catch (err) {
-      Object.assign(tool, before);
-      affectedOps.forEach((o) => { o.DieName = before.Description; });
-      affectedOutsource.forEach((o) => { o.DieName = before.Description; });
-      affectedChildParts.forEach((c) => { c.DieName = before.Description; });
-      saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save changes to Die ${toolId} to the Google Sheet — undone. ${err.message}`);
+  const items = [{ sheet: "Tools", row: fields, key_column: "ToolId" }];
+  affectedOps.forEach((o) => items.push({ sheet: "Operations", row: { ...o }, key_column: "Id" }));
+  affectedOutsource.forEach((o) => items.push({ sheet: "OutsourceEntries", row: { ...o }, key_column: "Id" }));
+  affectedChildParts.forEach((c) => items.push({ sheet: "ChildParts", row: { ...c }, key_column: "ChildId" }));
+  queueWrite(
+    items.length > 1 ? batchPayload(items) : upsertPayload("Tools", fields, "ToolId"),
+    {
+      failMsg: `Could not save changes to Die ${toolId} to the Google Sheet — undone.`,
+      rollback: () => {
+        Object.assign(tool, before);
+        affectedOps.forEach((o) => { o.DieName = before.Description; });
+        affectedOutsource.forEach((o) => { o.DieName = before.Description; });
+        affectedChildParts.forEach((c) => { c.DieName = before.Description; });
+        saveCacheToLocalStorage();
+      },
     }
-  })();
+  );
 
   return fields;
 }
@@ -518,6 +693,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
 // _rename_tool() in app/backend/main.py. `fields` carries any pending
 // (uncommitted) field edits from the same Save click.
 async function renameTool(oldId, newId, fields) {
+  await drainOutbox();
   if (findTool(newId)) throw new Error(`Die ID ${newId} already exists`);
   const tool = fields || findTool(oldId);
   if (!tool) throw new Error("Die not found");
@@ -553,6 +729,7 @@ async function renameTool(oldId, newId, fields) {
 // app/backend/main.py.
 async function deleteTool(toolId) {
   if (!findTool(toolId)) throw new Error("Die not found");
+  await drainOutbox();
   await Promise.all([
     sheetDelete("Tools", "ToolId", toolId),
     sheetDelete("Parts", "ToolId", toolId),
@@ -645,17 +822,17 @@ function deletePart(partId) {
   store.operations = store.operations.filter((o) => String(o.PartId) !== String(partId));
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetDelete("Parts", "PartId", partId);
-      if (hadOps) await sheetDelete("Operations", "PartId", partId);
-    } catch (err) {
+  const opts = {
+    failMsg: `Could not delete part ${partId} from the Google Sheet — undone.`,
+    group: `delpart:${partId}`,
+    rollback: () => {
       store.parts = store.parts.concat(partSnapshot);
       store.operations = store.operations.concat(opsSnapshot);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not delete part ${partId} from the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  };
+  queueWrite(deletePayload("Parts", "PartId", partId), opts);
+  if (hadOps) queueWrite(deletePayload("Operations", "PartId", partId), opts);
 }
 
 // Add several plates at once — one Part row each, same auto-generated
@@ -691,20 +868,18 @@ function addPartsBulk(toolId, names) {
   tool.NextPartSeq = seq;
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetBatch(
-        rows.map((row) => ({ sheet: "Parts", row, key_column: "PartId" })).concat([
-          { sheet: "Tools", row: { ...tool }, key_column: "ToolId" },
-        ])
-      );
-    } catch (err) {
+  queueWrite(batchPayload(
+    rows.map((row) => ({ sheet: "Parts", row, key_column: "PartId" })).concat([
+      { sheet: "Tools", row: { ...tool }, key_column: "ToolId" },
+    ])
+  ), {
+    failMsg: `Could not add plates to ${toolId} in the Google Sheet — undone.`,
+    rollback: () => {
       store.parts = store.parts.filter((p) => !rows.some((r) => r.PartId === p.PartId));
       tool.NextPartSeq = startSeq;
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not add plates to ${toolId} in the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return rows;
 }
@@ -741,17 +916,15 @@ async function updatePartsBulk(edits) {
 
   if (plainUpdates.length) {
     saveCacheToLocalStorage();
-    (async () => {
-      try {
-        await sheetBatch(plainUpdates.map((row) => ({
-          sheet: "Parts", row: { ...row, CreatedAt: isoStamp(row.CreatedAt) }, key_column: "PartId",
-        })));
-      } catch (err) {
+    queueWrite(batchPayload(plainUpdates.map((row) => ({
+      sheet: "Parts", row: { ...row, CreatedAt: isoStamp(row.CreatedAt) }, key_column: "PartId",
+    }))), {
+      failMsg: "Could not save part changes to the Google Sheet — undone.",
+      rollback: () => {
         plainUpdates.forEach((p, i) => Object.assign(p, before[i]));
         saveCacheToLocalStorage();
-        notifyBackgroundError(`Could not save part changes to the Google Sheet — undone. ${err.message}`);
-      }
-    })();
+      },
+    });
   }
 
   const renamed = [];
@@ -766,6 +939,7 @@ async function updatePartsBulk(edits) {
 // with it, mirroring _rename_part() in app/backend/main.py. `fields` carries
 // any pending (uncommitted) field edits from the same Save All click.
 async function renamePart(oldId, newId, fields) {
+  await drainOutbox();
   if (findPart(newId)) throw new Error(`Part ID ${newId} already exists`);
   const part = fields || findPart(oldId);
   if (!part) throw new Error("Part not found");
@@ -860,18 +1034,18 @@ function saveChildParts(toolId, rows) {
   store.childParts = before.filter((c) => String(c.ToolId) !== String(toolId)).concat(built);
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetDelete("ChildParts", "ToolId", toolId);
-      if (built.length) {
-        await sheetBatch(built.map((row) => ({ sheet: "ChildParts", row, key_column: "ChildId" })));
-      }
-    } catch (err) {
+  const opts = {
+    failMsg: `Could not save child parts for ${toolId} to the Google Sheet — undone.`,
+    group: `childparts:${toolId}`,
+    rollback: () => {
       store.childParts = before;
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save child parts for ${toolId} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  };
+  queueWrite(deletePayload("ChildParts", "ToolId", toolId), opts);
+  if (built.length) {
+    queueWrite(batchPayload(built.map((row) => ({ sheet: "ChildParts", row, key_column: "ChildId" }))), opts);
+  }
 
   return built;
 }
@@ -968,15 +1142,13 @@ function addScheduleBulk(toolId, names) {
   store.scheduleActivities = store.scheduleActivities.concat(created);
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetBatch(created.map((row) => ({ sheet: "Schedule", row, key_column: "Id" })));
-    } catch (err) {
+  queueWrite(batchPayload(created.map((row) => ({ sheet: "Schedule", row, key_column: "Id" }))), {
+    failMsg: `Could not add schedule activities for ${toolId} to the Google Sheet — undone.`,
+    rollback: () => {
       store.scheduleActivities = store.scheduleActivities.filter((a) => !created.includes(a));
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not add schedule activities for ${toolId} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return created;
 }
@@ -989,15 +1161,13 @@ function deleteScheduleActivity(id) {
   store.scheduleActivities = store.scheduleActivities.filter((a) => String(a.Id) !== String(id));
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetDelete("Schedule", "Id", id);
-    } catch (err) {
+  queueWrite(deletePayload("Schedule", "Id", id), {
+    failMsg: "Could not delete schedule activity from the Google Sheet — undone.",
+    rollback: () => {
       store.scheduleActivities = store.scheduleActivities.concat(snapshot);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not delete schedule activity from the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 }
 
 // Every schedule activity for this die, each annotated with its Plan mark
@@ -1062,19 +1232,17 @@ function saveScheduleMarkRange(toolId, start, end, marksByDate) {
   tool.ScheduleRangeEnd = end;
   saveCacheToLocalStorage();
 
-  const items = Array.from(changedActivities).map((row) => ({ sheet: "Schedule", row, key_column: "Id" }));
+  const items = Array.from(changedActivities).map((row) => ({ sheet: "Schedule", row: { ...row }, key_column: "Id" }));
   items.push({ sheet: "Tools", row: { ...tool }, key_column: "ToolId" });
 
-  (async () => {
-    try {
-      await sheetBatch(items);
-    } catch (err) {
+  queueWrite(batchPayload(items), {
+    failMsg: `Could not save schedule changes for ${toolId} to the Google Sheet — undone.`,
+    rollback: () => {
       beforeByActivity.forEach((oldVals, activity) => Object.assign(activity, oldVals));
       Object.assign(tool, beforeRange);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save schedule changes for ${toolId} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 }
 
 // ---------- outsource (send a part to an outside vendor) ----------
@@ -1132,24 +1300,23 @@ function startOutsource({ toolId, partId, process, place, duration }) {
   store.outsourceEntries.push(row);
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      const out = await sheetStartOutsource(row);
-      if (out && out.ok === false) {
-        store.outsourceEntries = store.outsourceEntries.filter((e) => e.Id !== row.Id);
-        await reloadOutsourceEntries();
-        const c = out.conflict || {};
-        notifyBackgroundError(
-          `Part ${row.PartId} is already OutSource${c.Place ? ` at ${c.Place}` : ""} — someone else sent it out first.`
-        );
-        return;
-      }
-    } catch (err) {
+  queueWrite({ action: "start_outsource", sheet: "OutsourceEntries", row }, {
+    failMsg: `Could not save "Send out ${row.PartId}" to the Google Sheet — undone.`,
+    group: `out:${row.Id}`,
+    rollback: () => {
       store.outsourceEntries = store.outsourceEntries.filter((e) => e.Id !== row.Id);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save "Send out ${row.PartId}" to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+    onResult: async (out) => {
+      if (!out || out.ok !== false) return;
+      store.outsourceEntries = store.outsourceEntries.filter((e) => e.Id !== row.Id);
+      await reloadOutsourceEntries().catch(() => {});
+      const c = out.conflict || {};
+      notifyBackgroundError(
+        `Part ${row.PartId} is already OutSource${c.Place ? ` at ${c.Place}` : ""} — someone else sent it out first.`
+      );
+    },
+  });
 
   return row;
 }
@@ -1164,15 +1331,14 @@ function stopOutsource(entryId) {
   Object.assign(entry, { Status: "Done", EndDate: now.date, EndTime: now.time });
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetUpsert("OutsourceEntries", entry, "Id");
-    } catch (err) {
+  queueWrite(upsertPayload("OutsourceEntries", { ...entry }, "Id"), {
+    failMsg: `Could not save "Return ${entry.PartId}" to the Google Sheet — undone.`,
+    group: `out:${entry.Id}`,
+    rollback: () => {
       Object.assign(entry, before);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save "Return ${entry.PartId}" to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return entry;
 }
@@ -1191,15 +1357,13 @@ function updatePartStatus(partId, { designReady, codeReady }) {
   saveCacheToLocalStorage();
 
   const row = { ...part, CreatedAt: isoStamp(part.CreatedAt) };
-  (async () => {
-    try {
-      await sheetUpsert("Parts", row, "PartId");
-    } catch (err) {
+  queueWrite(upsertPayload("Parts", row, "PartId"), {
+    failMsg: `Could not save status for part ${partId} to the Google Sheet — undone.`,
+    rollback: () => {
       Object.assign(part, before);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save status for part ${partId} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return row;
 }
@@ -1237,15 +1401,13 @@ function createEmployee(name, shift, machine) {
   store.employees.push(row);
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetUpsert("Employees", row, "Name");
-    } catch (err) {
+  queueWrite(upsertPayload("Employees", { ...row }, "Name"), {
+    failMsg: `Could not save new employee ${n} to the Google Sheet — undone.`,
+    rollback: () => {
       store.employees = store.employees.filter((e) => e !== row);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save new employee ${n} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return row;
 }
@@ -1265,15 +1427,13 @@ function updateEmployee(name, { shift, machine }) {
   saveCacheToLocalStorage();
 
   const row = { ...emp, CreatedAt: isoStamp(emp.CreatedAt) };
-  (async () => {
-    try {
-      await sheetUpsert("Employees", row, "Name");
-    } catch (err) {
+  queueWrite(upsertPayload("Employees", row, "Name"), {
+    failMsg: `Could not save changes to employee ${name} to the Google Sheet — undone.`,
+    rollback: () => {
       Object.assign(emp, before);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save changes to employee ${name} to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return row;
 }
@@ -1285,15 +1445,13 @@ function deleteEmployee(name) {
   store.employees = store.employees.filter((e) => String(e.Name) !== String(name));
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetDelete("Employees", "Name", name);
-    } catch (err) {
+  queueWrite(deletePayload("Employees", "Name", name), {
+    failMsg: `Could not delete employee ${name} from the Google Sheet — undone.`,
+    rollback: () => {
       store.employees = store.employees.concat(snapshot);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not delete employee ${name} from the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 }
 
 // ---------- operations ----------
@@ -1358,14 +1516,15 @@ function partsWithStatus(toolId) {
   });
 }
 
-// Appends one row to OperationHistory (no key_column, so it's always ADDED,
-// never overwritten) — the full Started -> Waiting -> Restarted -> ... ->
+// Builds the OperationHistory row (always ADDED by the script, never
+// overwritten) — sent in the SAME request as the Operations write (see the
+// "history" field in APPS_SCRIPT.gs) instead of as a second request. The full Started -> Waiting -> Restarted -> ... ->
 // Done trail, mirroring _log_operation_event() in app/backend/main.py. Date/
 // Time on the row is THIS event's own timestamp, not the entry's original
 // start time.
-async function logOperationEvent(op, event) {
+function buildHistoryRow(op, event) {
   const n = nowParts();
-  const row = {
+  return {
     ToolId: op.ToolId,
     PartId: op.PartId,
     DieName: op.DieName,
@@ -1380,11 +1539,6 @@ async function logOperationEvent(op, event) {
     Event: event,
     CycleNo: op.WaitingCount || 0,
   };
-  try {
-    await sheetUpsert("OperationHistory", row);
-  } catch (_) {
-    // History is a nice-to-have log — never block Start/Stop on it.
-  }
 }
 
 // ---------- background sync error reporting ----------
@@ -1445,28 +1599,29 @@ function startOperation({ toolId, partId, stage, operator }) {
   store.operations.push(row);
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      // Server re-checks under a lock — the local openOperationFor() check
-      // above only guards against this same tablet's own stale cache; this
-      // is what actually stops two devices both winning the same Start.
-      const out = await sheetStartOperation(row);
-      if (out && out.ok === false) {
-        store.operations = store.operations.filter((o) => o.Id !== row.Id);
-        await reloadOperations();
-        const c = out.conflict || {};
-        notifyBackgroundError(
-          `Part ${row.PartId} is already ${c.Status || "in progress"} at ${c.Department || "another department"} — someone else started it first.`
-        );
-        return;
-      }
-      await logOperationEvent(row, "Started");
-    } catch (err) {
+  // Server re-checks under a lock — the local openOperationFor() check above
+  // only guards against this same tablet's own stale cache; this is what
+  // actually stops two devices both winning the same Start. One request: it
+  // also appends the "Started" history row.
+  queueWrite({
+    action: "start_operation", sheet: "Operations", row, history: buildHistoryRow(row, "Started"),
+  }, {
+    failMsg: `Could not save "Start ${row.PartId}" to the Google Sheet — undone.`,
+    group: `op:${row.Id}`,
+    rollback: () => {
       store.operations = store.operations.filter((o) => o.Id !== row.Id);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save "Start ${row.PartId}" to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+    onResult: async (out) => {
+      if (!out || out.ok !== false) return;
+      store.operations = store.operations.filter((o) => o.Id !== row.Id);
+      await reloadOperations().catch(() => {}); // best effort — the message below matters more
+      const c = out.conflict || {};
+      notifyBackgroundError(
+        `Part ${row.PartId} is already ${c.Status || "in progress"} at ${c.Department || "another department"} — someone else started it first.`
+      );
+    },
+  });
 
   return row;
 }
@@ -1494,16 +1649,17 @@ function stopOperation(opId, completed) {
   const row = { ...op, StartDate: isoDate(op.StartDate), StartTime: isoTime(op.StartTime) };
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetUpsert("Operations", row, "Id");
-      await logOperationEvent(row, completed ? "Done" : "Waiting");
-    } catch (err) {
+  queueWrite({
+    action: "op_update", sheet: "Operations", row, key_column: "Id",
+    history: buildHistoryRow(row, completed ? "Done" : "Waiting"),
+  }, {
+    failMsg: `Could not save "Stop ${row.PartId}" to the Google Sheet — undone.`,
+    group: `op:${row.Id}`,
+    rollback: () => {
       Object.assign(op, prevSnapshot);
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save "Stop ${row.PartId}" to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return row;
 }
@@ -1521,16 +1677,17 @@ function restartOperation(opId) {
   const row = { ...op, StartDate: isoDate(op.StartDate), StartTime: isoTime(op.StartTime) };
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetUpsert("Operations", row, "Id");
-      await logOperationEvent(row, "Restarted");
-    } catch (err) {
+  queueWrite({
+    action: "op_update", sheet: "Operations", row, key_column: "Id",
+    history: buildHistoryRow(row, "Restarted"),
+  }, {
+    failMsg: `Could not save "Restart ${row.PartId}" to the Google Sheet — undone.`,
+    group: `op:${row.Id}`,
+    rollback: () => {
       op.Status = prevStatus;
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not save "Restart ${row.PartId}" to the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  });
 
   return row;
 }
@@ -1547,26 +1704,19 @@ function resetOperations() {
   store.outsourceEntries = [];
   saveCacheToLocalStorage();
 
-  (async () => {
-    try {
-      await sheetClear("Operations");
-      try {
-        await sheetClear("OperationHistory");
-      } catch (_) {
-        // Tab may not exist yet if no entry has ever gone through a full cycle.
-      }
-      try {
-        await sheetClear("OutsourceEntries"); // cleared too — one "start fresh"
-      } catch (_) {
-        // Tab may not exist yet if nothing was ever sent out.
-      }
-    } catch (err) {
+  // A tab that doesn't exist yet clears as a harmless no-op on the server.
+  const opts = {
+    failMsg: "Could not reset entries in the Google Sheet — undone.",
+    group: "reset",
+    rollback: () => {
       store.operations = prevOperations;
       store.outsourceEntries = prevOutsourceEntries;
       saveCacheToLocalStorage();
-      notifyBackgroundError(`Could not reset entries in the Google Sheet — undone. ${err.message}`);
-    }
-  })();
+    },
+  };
+  queueWrite(clearPayload("Operations"), opts);
+  queueWrite(clearPayload("OperationHistory"), opts);
+  queueWrite(clearPayload("OutsourceEntries"), opts); // cleared too — one "start fresh"
 
   return count;
 }

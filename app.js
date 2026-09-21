@@ -1413,14 +1413,36 @@ $("refresh-open-btn-add").addEventListener("click", refreshFromSheet);
 // only the read-only tables/tiles re-render. Only Operations and
 // OutsourceEntries are polled (the fast-changing, shared-conflict data) —
 // Tools/Parts/Employees change rarely and still refresh via Refresh/reload.
-const SYNC_INTERVAL_MS = 4000;
+//
+// Cheap by design (see pollLive in sheet.js): ONE request for both tabs, and
+// the script answers "unchanged" without reading a single tab when nothing was
+// written. Ticks every 4 s while someone is using the tablet, every 12 s when
+// it sits idle; a full download is forced once a minute because a hand edit
+// made straight in the Sheet does not bump the script's change counter.
+const SYNC_TICK_MS = 4000;
+const SYNC_IDLE_MS = 12000;
+const SYNC_ACTIVE_WINDOW_MS = 60000;
+const SYNC_FULL_EVERY_MS = 60000;
 let syncInFlight = false;
+let lastUserActivity = Date.now();
+let lastSyncAt = 0;
+let lastFullSyncAt = 0;
+["pointerdown", "keydown"].forEach((evt) =>
+  document.addEventListener(evt, () => { lastUserActivity = Date.now(); }, { passive: true, capture: true })
+);
 
-async function backgroundSync() {
+async function backgroundSync(catchUp) {
   if (syncInFlight || document.hidden) return;
+  const now = Date.now();
+  const idle = now - lastUserActivity > SYNC_ACTIVE_WINDOW_MS;
+  if (!catchUp && idle && now - lastSyncAt < SYNC_IDLE_MS) return;
   syncInFlight = true;
+  lastSyncAt = now;
   try {
-    await Promise.all([reloadOperations(), reloadOutsourceEntries()]);
+    const full = now - lastFullSyncAt > SYNC_FULL_EVERY_MS;
+    const changed = await pollLive(full);
+    if (full) lastFullSyncAt = now;
+    if (!changed) return;
     refreshOpenOps();
     refreshOutsourceTable();
     refreshOutsourceOpenTable();
@@ -1435,12 +1457,22 @@ async function backgroundSync() {
   }
 }
 
-setInterval(backgroundSync, SYNC_INTERVAL_MS);
+setInterval(backgroundSync, SYNC_TICK_MS);
 // Tablet screens sleep/wake and browser tabs get backgrounded a lot on the
 // shop floor — catch up the moment it's visible again instead of waiting
 // up to SYNC_INTERVAL_MS.
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) backgroundSync();
+  if (!document.hidden) backgroundSync(true);
+});
+
+// "N changes waiting to sync" — shown only while writes are queued (e.g. no
+// signal); see the outbox in sheet.js. Everything shown is already on screen
+// and will be sent automatically once the connection is back.
+onOutboxChange((n) => {
+  const pill = $("sync-pill");
+  if (!pill) return;
+  pill.hidden = n === 0;
+  if (n) pill.textContent = t("sync.pending", { n });
 });
 
 // ---------- Task-Completed popover (Y = green / N = red), anchored to the
@@ -1819,6 +1851,9 @@ async function init() {
   prefetchLogin("Admin");
   prefetchLogin("Workshop");
 
+  // Changes that were still waiting to sync when the app was last closed go
+  // back out now (their on-screen effect is already in the cache below).
+  loadOutboxFromLocalStorage();
   const hasCache = loadCacheFromLocalStorage();
   if (hasCache) {
     refreshEverything();
