@@ -1397,7 +1397,8 @@ async function refreshFromSheet() {
     refreshEverything();
     showGlobal("");
   } catch (err) {
-    showGlobal(errText(err, t("errors.refreshFailed")));
+    console.warn("[refresh]", err);
+    showGlobal(""); // quiet — the screen keeps showing the last-known data
   }
 }
 $("refresh-open-btn").addEventListener("click", refreshFromSheet);
@@ -1465,15 +1466,6 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) backgroundSync(true);
 });
 
-// "N changes waiting to sync" — shown only while writes are queued (e.g. no
-// signal); see the outbox in sheet.js. Everything shown is already on screen
-// and will be sent automatically once the connection is back.
-onOutboxChange((n) => {
-  const pill = $("sync-pill");
-  if (!pill) return;
-  pill.hidden = n === 0;
-  if (n) pill.textContent = t("sync.pending", { n });
-});
 
 // ---------- Task-Completed popover (Y = green / N = red), anchored to the
 // Stop button that was clicked, instead of the browser's plain confirm() box.
@@ -1757,8 +1749,10 @@ $("track-btn").addEventListener("click", renderTrackResult);
 // Sheet in the background (see sheet.js). If that background write ends up
 // failing, the local change is already undone by the time this fires — just
 // surface why and re-render so the screen matches reality again.
+// No banner is shown any more (the operator asked for a quiet screen) — the
+// reason goes to the browser console for whoever debugs it.
 onBackgroundError((message) => {
-  showGlobal(message);
+  console.warn("[sync]", message);
   refreshOpenOps();
   refreshWizPartStepIfActive();
   renderDeptGrid();
@@ -1870,10 +1864,10 @@ async function init() {
   } catch (err) {
     // sheet.js already phrases these for a shop-floor reader (no internet /
     // opened as a file / sheet script out of date), so pass it straight on.
-    // With a cache already on screen this is a quiet background-refresh
-    // failure, not a blocker — the banner just explains why what's showing
-    // might be a little out of date.
-    showGlobal(errText(err, hasCache ? t("errors.refreshFailed") : t("errors.loadFailed")));
+    // With the last-known data already on screen this is a quiet background
+    // refresh failure — say nothing (the next sync retries by itself). Only
+    // when there is nothing to show at all is a message needed.
+    if (!hasCache) showGlobal(errText(err, t("errors.loadFailed")));
   }
 }
 

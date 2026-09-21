@@ -368,12 +368,16 @@ let forceFullRead = false;    // next poll/refresh must download everything
 let outboxListener = () => {};
 const onOutboxChange = (fn) => { outboxListener = fn; };
 const outboxPending = () => outbox.length;
+// How long the oldest still-unsent change has been waiting (0 if none) — lets
+// the screen stay completely quiet for the normal short retry and only speak
+// up if something has been stuck for minutes.
+const outboxOldestAgeMs = () => (outbox.length ? Date.now() - (outbox[0].queuedAt || Date.now()) : 0);
 
 function saveOutbox() {
   try {
     if (!outbox.length) localStorage.removeItem(OUTBOX_KEY);
     else localStorage.setItem(OUTBOX_KEY, JSON.stringify(
-      outbox.map(({ payload, label, failMsg, group }) => ({ payload, label, failMsg, group }))
+      outbox.map(({ payload, label, failMsg, group, queuedAt }) => ({ payload, label, failMsg, group, queuedAt }))
     ));
   } catch (_) { /* storage unavailable — queue still works for this session */ }
   outboxListener(outbox.length);
@@ -395,7 +399,7 @@ function loadOutboxFromLocalStorage() {
 // own queued Stop with it), rollback() (undo the on-screen change),
 // onResult(out) (called with the server's answer, e.g. a Start conflict).
 function queueWrite(payload, { failMsg, group, rollback, onResult } = {}) {
-  outbox.push({ payload, failMsg: failMsg || "Could not save a change to the Google Sheet.", group: group || null, tries: 0, rollback, onResult });
+  outbox.push({ payload, failMsg: failMsg || "Could not save a change to the Google Sheet.", group: group || null, tries: 0, queuedAt: Date.now(), rollback, onResult });
   saveOutbox();
   // While a backoff retry is pending the connection is known to be down —
   // don't hammer it (and reset the backoff) on every new tap; the scheduled
