@@ -190,7 +190,6 @@ const TRANSLATIONS = {
     "common.saving": "Saving…",
     "common.clearing": "Clearing…",
     "common.refreshing": "Refreshing…",
-    "sync.pending": "⏳ {n} change(s) waiting to sync — will send automatically",
 
     "wizard.home": "🏠 Home",
     "wizard.previous": "◀ Previous",
@@ -484,7 +483,6 @@ const TRANSLATIONS = {
     "common.saving": "सेव हो रहा है…",
     "common.clearing": "साफ़ हो रहा है…",
     "common.refreshing": "रिफ्रेश हो रहा है…",
-    "sync.pending": "⏳ {n} बदलाव सिंक के लिए रुके हैं — अपने आप भेज दिए जाएँगे",
 
     "wizard.home": "🏠 होम",
     "wizard.previous": "◀ पिछला",

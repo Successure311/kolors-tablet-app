@@ -13,7 +13,7 @@
  * touched, so data is always live either way.
  */
 
-const CACHE = "kolors-app-v5";
+const CACHE = "kolors-app-v6";
 const ASSETS = [
   "index.html",
   "style.css",
@@ -32,7 +32,7 @@ self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(CACHE)
       // Individually, so one missing file can't fail the whole install.
-      .then((c) => Promise.all(ASSETS.map((a) => c.add(a).catch(() => {}))))
+      .then((c) => Promise.all(ASSETS.map((a) => c.add(new Request(a, { cache: "reload" })).catch(() => {}))))
       .then(() => self.skipWaiting())
   );
 });
@@ -53,7 +53,7 @@ self.addEventListener("fetch", (e) => {
 
   e.respondWith(
     caches.match(e.request).then((cached) => {
-      const network = fetch(e.request)
+      const network = fetch(e.request.url, { cache: "no-cache" })
         .then((res) => {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
