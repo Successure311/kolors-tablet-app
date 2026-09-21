@@ -13,7 +13,7 @@
  * touched, so data is always live either way.
  */
 
-const CACHE = "kolors-app-v6";
+const CACHE = "kolors-app-v7";
 const ASSETS = [
   "index.html",
   "style.css",
@@ -28,11 +28,26 @@ const ASSETS = [
   "icons/icon-maskable-512.png",
 ];
 
+// A response that arrived through a redirect (the host may redirect e.g.
+// /index.html to /) must never be handed to a page navigation — the browser
+// rejects it with "Response served by service worker has redirections". So
+// anything that was redirected is re-wrapped as a plain response first, both
+// when storing it and when serving it.
+function clean(res) {
+  if (!res || !res.redirected) return Promise.resolve(res);
+  return res.blob().then((b) => new Response(b, { status: res.status, statusText: res.statusText, headers: res.headers }));
+}
+
 self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(CACHE)
-      // Individually, so one missing file can't fail the whole install.
-      .then((c) => Promise.all(ASSETS.map((a) => c.add(new Request(a, { cache: "reload" })).catch(() => {}))))
+      // Individually, so one missing file can't fail the whole install. Each
+      // is fetched fresh from the network (never the browser's HTTP cache).
+      .then((c) => Promise.all(ASSETS.map((a) =>
+        fetch(new Request(a, { cache: "reload" }))
+          .then((res) => (res.ok ? clean(res).then((r) => c.put(a, r)) : null))
+          .catch(() => {})
+      )))
       .then(() => self.skipWaiting())
   );
 });
@@ -53,15 +68,23 @@ self.addEventListener("fetch", (e) => {
 
   e.respondWith(
     caches.match(e.request).then((cached) => {
-      const network = fetch(e.request.url, { cache: "no-cache" })
+      // A page navigation is passed through as-is (its redirect mode can't be
+      // rebuilt); everything else is revalidated with the server so a new
+      // release is picked up.
+      const req = e.request.mode === "navigate" ? e.request : new Request(e.request.url, { cache: "no-cache" });
+      const network = fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
-          return res;
+          if (res.ok) {
+            const forCache = res.clone();
+            clean(forCache)
+              .then((r) => caches.open(CACHE).then((c) => c.put(e.request, r)))
+              .catch(() => {});
+          }
+          return clean(res);
         })
         .catch(() => cached); // offline and nothing cached yet — genuine failure
       // Instant if we already have a copy; otherwise wait on the network.
-      return cached || network;
+      return cached ? clean(cached) : network;
     })
   );
 });
