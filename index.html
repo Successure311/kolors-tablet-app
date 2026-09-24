@@ -254,19 +254,6 @@
           <div class="die-info-row"><span data-i18n="dieInfo.typeLabel">Type Of Project:-</span> <span id="die-info-type"></span></div>
         </div>
         <div id="schedule-content" hidden>
-          <h3 data-i18n="schedule.addOtherHeading">Add Other Activity</h3>
-          <div class="other-input-row">
-            <label><span data-i18n="schedule.otherLabel">Activity Name (Other)</span>
-              <input id="schedule-other-input" data-i18n-placeholder="schedule.otherPlaceholder" placeholder="Type activity name" />
-            </label>
-            <button type="button" id="schedule-other-add-btn" data-i18n="schedule.addToListButton">Add to list</button>
-          </div>
-          <div id="schedule-custom-list" class="chip-list"></div>
-          <div class="actions">
-            <button type="button" id="add-schedule-btn" data-i18n="schedule.addSelectedButton">Add Activity</button>
-          </div>
-          <p id="schedule-add-msg" class="msg"></p>
-
           <h3 data-i18n="schedule.tableHeading">Schedule</h3>
           <div class="schedule-range-row">
             <label><span data-i18n="schedule.rangeStartLabel">Plan From:</span>
@@ -284,6 +271,19 @@
               <tbody></tbody>
             </table>
           </div>
+          <h3 data-i18n="schedule.addOtherHeading">Add Other Activity</h3>
+          <div class="other-input-row">
+            <label><span data-i18n="schedule.otherLabel">Activity Name (Other)</span>
+              <input id="schedule-other-input" data-i18n-placeholder="schedule.otherPlaceholder" placeholder="Type activity name" />
+            </label>
+            <button type="button" id="schedule-other-add-btn" data-i18n="schedule.addToListButton">Add to list</button>
+          </div>
+          <div id="schedule-custom-list" class="chip-list"></div>
+          <div class="actions">
+            <button type="button" id="add-schedule-btn" data-i18n="schedule.addSelectedButton">Add Activity</button>
+          </div>
+          <p id="schedule-add-msg" class="msg"></p>
+
           <div class="actions">
             <button type="button" id="save-schedule-btn" data-i18n="schedule.saveAllButton">Save All</button>
           </div>
