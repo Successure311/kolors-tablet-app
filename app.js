@@ -468,6 +468,8 @@ partToolSelect.addEventListener("change", () => {
   refreshChildPartsTable();
   refreshScheduleRange();
   refreshDieInfoBox();
+  showMsg(dieStatusMsg, "");
+  refreshDieStatusTable();
 });
 
 function refreshParts() {
@@ -852,7 +854,7 @@ function readyToggle(field, current) {
 }
 
 function refreshDieStatusTable() {
-  const toolId = dieStatusToolSelect.value;
+  const toolId = partToolSelect.value; // follows the main die picker
   if (!toolId) {
     dieStatusTableBody.innerHTML = `<tr><td colspan="4">${t("dieStatus.selectDieFirst")}</td></tr>`;
     return;
