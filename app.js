@@ -213,6 +213,10 @@ function syncEditDieVisibility() {
   editDieControls.hidden = !has;
   partsContent.hidden = !has;
   scheduleContent.hidden = !has;
+  // Nothing but Employees until a die is picked — hide the whole cards, not just their bodies.
+  partsCard.hidden = !has;
+  scheduleCard.hidden = !has;
+  dieStatusCard.hidden = !has;
   editDieFields.hidden = true;
 }
 
@@ -279,6 +283,7 @@ async function enterNewToolEditMode() {
     partToolSelect.value = "";
   }
   dieInfoBox.hidden = true;
+  syncEditDieVisibility();
   refreshDieStatusTable();
 }
 
