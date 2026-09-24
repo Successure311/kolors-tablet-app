@@ -151,14 +151,6 @@
         <label><span data-i18n="parts.selectDie">Select Die</span>
           <select id="part-tool-select"></select>
         </label>
-      </div>
-
-      <!-- Shared: Edit-Delete Die / Add Plates / Parts / Child Parts. One
-           physical copy — JS re-parents it into add-die-parts-mount or
-           edit-die-parts-mount depending on which option above is active. -->
-      <div class="card" id="parts-card" hidden>
-        <h2 data-i18n="parts.heading">Add / Edit Parts</h2>
-
         <div id="edit-die-controls" hidden>
           <div class="actions">
             <button type="button" id="edit-die-btn" data-i18n="tool.editButton">Edit Die</button>
@@ -177,6 +169,13 @@
           </div>
           <p id="edit-die-msg" class="msg"></p>
         </div>
+      </div>
+
+      <!-- Shared: Edit-Delete Die / Add Plates / Parts / Child Parts. One
+           physical copy — JS re-parents it into add-die-parts-mount or
+           edit-die-parts-mount depending on which option above is active. -->
+      <div class="card" id="parts-card" hidden>
+        <h2 data-i18n="parts.heading">Add / Edit Parts</h2>
 
         <div id="parts-content" hidden>
           <h3 data-i18n="parts.addPlatesHeading">Add Plates</h3>
