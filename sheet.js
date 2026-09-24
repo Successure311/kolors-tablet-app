@@ -577,7 +577,7 @@ const findTool = (toolId) => store.tools.find((t) => String(t.ToolId) === String
 // happens in the background, undone if it ultimately fails.
 function createTool({ toolId, description, productName, typeOfProject, projectStartDate }) {
   const id = (toolId || "").trim();
-  if (!id) throw new Error("Die ID is required");
+  if (!id) throw new Error("Project ID is required");
   if (!(description || "").trim()) throw new Error("Description is required");
   if (findTool(id)) throw new Error(`Die ${id} already exists`);
   const row = {
@@ -624,7 +624,7 @@ function createTool({ toolId, description, productName, typeOfProject, projectSt
   return row;
 }
 
-// Edit a die's Description/Product Name, and optionally rename its Die ID.
+// Edit a die's Description/Product Name, and optionally rename its Project ID.
 // A rename cascades to every row that references this die (Parts,
 // Operations, OutsourceEntries, ChildParts) across several sheet tabs, so
 // that path (renameTool) still waits on the network — but a plain
@@ -699,7 +699,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
 // (uncommitted) field edits from the same Save click.
 async function renameTool(oldId, newId, fields) {
   await drainOutbox();
-  if (findTool(newId)) throw new Error(`Die ID ${newId} already exists`);
+  if (findTool(newId)) throw new Error(`Project ID ${newId} already exists`);
   const tool = fields || findTool(oldId);
   if (!tool) throw new Error("Die not found");
 

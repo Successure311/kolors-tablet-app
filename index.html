@@ -90,7 +90,7 @@
         <div class="card">
           <h2 data-i18n="tool.heading">Add a New Die</h2>
           <form id="tool-form">
-            <label><span data-i18n="tool.idLabel">Die ID</span> <input name="tool_id" data-i18n-placeholder="tool.idPlaceholder" placeholder="e.g. PT-170" required /></label>
+            <label><span data-i18n="tool.idLabel">Project ID</span> <input name="tool_id" data-i18n-placeholder="tool.idPlaceholder" placeholder="e.g. PT-170" required /></label>
             <label><span data-i18n="tool.descLabel">Description</span> <input name="description" data-i18n-placeholder="tool.descPlaceholder" placeholder="e.g. KLICK SPN Plastic Door 4 Way Knockout Tool" required /></label>
             <label><span data-i18n="tool.productLabel">Product Name</span> <input name="product_name" data-i18n-placeholder="tool.productPlaceholder" placeholder="optional" /></label>
             <label><span data-i18n="tool.typeOfProjectLabel">Type Of Project</span> <select name="type_of_project" id="tool-type-of-project"></select></label>
@@ -167,7 +167,7 @@
             <button type="button" id="delete-die-btn" class="danger" data-i18n="tool.deleteButton">Delete Die</button>
           </div>
           <div id="edit-die-fields" hidden>
-            <label><span data-i18n="tool.idLabel">Die ID</span> <input id="edit-die-id" /></label>
+            <label><span data-i18n="tool.idLabel">Project ID</span> <input id="edit-die-id" /></label>
             <label><span data-i18n="tool.descLabel">Description</span> <input id="edit-die-description" /></label>
             <label><span data-i18n="tool.productLabel">Product Name</span> <input id="edit-die-product" data-i18n-placeholder="tool.productPlaceholder" placeholder="optional" /></label>
             <label><span data-i18n="tool.typeOfProjectLabel">Type Of Project</span> <select id="edit-die-type-of-project"></select></label>
@@ -409,7 +409,7 @@
             <div class="table-scroll">
               <table id="os-table">
                 <thead><tr>
-                  <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                  <th data-i18n="entries.thDieId">Project ID</th><th data-i18n="entries.thPartId">Part ID</th>
                   <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
                   <th data-i18n="outsource.thProcess">Process</th><th data-i18n="outsource.thPlace">Place</th>
                   <th data-i18n="outsource.thDuration">Duration</th>
@@ -433,7 +433,7 @@
           <div class="table-scroll">
             <table id="open-table-add">
               <thead><tr>
-                <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                <th data-i18n="entries.thDieId">Project ID</th><th data-i18n="entries.thPartId">Part ID</th>
                 <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
                 <th data-i18n="entries.thDepartment">Department</th><th data-i18n="entries.thOperator">Operator</th>
                 <th data-i18n="entries.thStartDate">Start Date</th><th data-i18n="entries.thStartTime">Start Time</th>
@@ -483,7 +483,7 @@
             <div class="table-scroll">
               <table id="wp-os-table">
                 <thead><tr>
-                  <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                  <th data-i18n="entries.thDieId">Project ID</th><th data-i18n="entries.thPartId">Part ID</th>
                   <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
                   <th data-i18n="outsource.thProcess">Process</th><th data-i18n="outsource.thPlace">Place</th>
                   <th data-i18n="outsource.thDuration">Duration</th>
@@ -508,7 +508,7 @@
           <div class="table-scroll">
             <table id="open-table">
               <thead><tr>
-                <th data-i18n="entries.thDieId">Die ID</th><th data-i18n="entries.thPartId">Part ID</th>
+                <th data-i18n="entries.thDieId">Project ID</th><th data-i18n="entries.thPartId">Part ID</th>
                 <th data-i18n="entries.thDieName">Die Name</th><th data-i18n="entries.thPartName">Part Name</th>
                 <th data-i18n="entries.thDepartment">Department</th><th data-i18n="entries.thOperator">Operator</th>
                 <th data-i18n="entries.thStartDate">Start Date</th><th data-i18n="entries.thStartTime">Start Time</th>
@@ -526,7 +526,7 @@
     <section id="track" class="tab-panel">
       <div class="card">
         <h2 data-i18n="track.heading">Track a Die</h2>
-        <label><span data-i18n="track.dieIdLabel">Die ID</span>
+        <label><span data-i18n="track.dieIdLabel">Project ID</span>
           <select id="track-tool-id"></select>
         </label>
         <button id="track-btn" data-i18n="track.showStatus">Show Status</button>

@@ -73,7 +73,7 @@ no Parts, and no way to affect the real data.
 
 =IMPORTRANGE("https://docs.google.com/spreadsheets/d/1Fl7uV1_U8iKLcp8X7AFxwwqNR3pgoHvP94L-XRsnBuI/edit","Operations!A:L")
 
-    (A:L is the 12 columns from Die ID to Status. The 13th column, Id, is an
+    (A:L is the 12 columns from Project ID to Status. The 13th column, Id, is an
      internal reference number - there is no reason for anyone to see it.)
 
  5. The cell will show  #REF!  . That is expected.

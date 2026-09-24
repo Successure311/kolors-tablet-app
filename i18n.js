@@ -27,7 +27,7 @@ const TRANSLATIONS = {
     "login.offlineError": "Could not check login — no internet?",
 
     "tool.heading": "Add a New Die",
-    "tool.idLabel": "Die ID",
+    "tool.idLabel": "Project ID",
     "tool.idPlaceholder": "e.g. PT-170",
     "tool.descLabel": "Description",
     "tool.descPlaceholder": "e.g. KLICK SPN Plastic Door 4 Way Knockout Tool",
@@ -221,7 +221,7 @@ const TRANSLATIONS = {
     "entries.resetFailed": "Failed to reset entries.",
     "entries.none": "No entries yet.",
     "entries.noneFiltered": "No running task — {employee} has nothing open in {stage}.",
-    "entries.thDieId": "Die ID",
+    "entries.thDieId": "Project ID",
     "entries.thPartId": "Part ID",
     "entries.thDieName": "Die Name",
     "entries.thPartName": "Part Name",
@@ -253,7 +253,7 @@ const TRANSLATIONS = {
     "popover.no": "N",
 
     "track.heading": "Track a Die",
-    "track.dieIdLabel": "Die ID",
+    "track.dieIdLabel": "Project ID",
     "track.showStatus": "Show Status",
     "track.dieNotFound": "Die not found.",
     "track.thPartId": "Part ID",
@@ -320,7 +320,7 @@ const TRANSLATIONS = {
     "login.offlineError": "लॉगिन जाँच नहीं हो सकी — इंटरनेट नहीं है क्या?",
 
     "tool.heading": "नई डाई जोड़ें",
-    "tool.idLabel": "डाई आईडी",
+    "tool.idLabel": "प्रोजेक्ट आईडी",
     "tool.idPlaceholder": "जैसे PT-170",
     "tool.descLabel": "विवरण",
     "tool.descPlaceholder": "जैसे KLICK SPN Plastic Door 4 Way Knockout Tool",
@@ -514,7 +514,7 @@ const TRANSLATIONS = {
     "entries.resetFailed": "एंट्रीज़ रीसेट करने में विफल।",
     "entries.none": "अभी कोई एंट्री नहीं।",
     "entries.noneFiltered": "कोई चल रहा काम नहीं — {employee} के पास {stage} में कुछ भी खुला नहीं है।",
-    "entries.thDieId": "डाई आईडी",
+    "entries.thDieId": "प्रोजेक्ट आईडी",
     "entries.thPartId": "पार्ट आईडी",
     "entries.thDieName": "डाई का नाम",
     "entries.thPartName": "पार्ट का नाम",
@@ -546,7 +546,7 @@ const TRANSLATIONS = {
     "popover.no": "नहीं",
 
     "track.heading": "डाई ट्रैक करें",
-    "track.dieIdLabel": "डाई आईडी",
+    "track.dieIdLabel": "प्रोजेक्ट आईडी",
     "track.showStatus": "स्थिति दिखाएं",
     "track.dieNotFound": "डाई नहीं मिली।",
     "track.thPartId": "पार्ट आईडी",
