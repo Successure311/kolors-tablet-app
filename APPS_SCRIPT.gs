@@ -165,7 +165,7 @@ var SCHEMA = {
   Admin: ["LoginId", "Password"],
   Workshop: ["LoginId", "Password"],
   Tools: ["ToolId", "Description", "ProductName", "TypeOfProject", "ProjectStartDate", "NextPartSeq", "NextScheduleSeq", "ScheduleRangeStart", "ScheduleRangeEnd", "CreatedAt"],
-  Parts: ["PartId", "ToolId", "Seq", "Name", "Material", "RoughSize", "Qty", "DesignReady", "CodeReady", "CreatedAt"],
+  Parts: ["PartId", "ToolId", "DieName", "Seq", "Name", "Material", "RoughSize", "Qty", "DesignReady", "CodeReady", "CreatedAt"],
   Employees: ["Name", "Shift", "Machine", "CreatedAt"],
   CustomStages: ["Name", "CreatedAt"],
   Operations: ["ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "StartDate", "StartTime", "EndDate", "EndTime", "Shift", "Status", "WaitingCount", "Id"],

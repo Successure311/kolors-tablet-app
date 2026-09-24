@@ -521,6 +521,26 @@ async function loadAll() {
   store.childParts = data.ChildParts;
   store.scheduleActivities = normaliseScheduleRows(data.Schedule);
   saveCacheToLocalStorage();
+  backfillPartDieNames();
+}
+
+// One-time-per-session fill of the Parts.DieName column for rows created
+// before it existed (or whose die was renamed by hand in the sheet). Only
+// writes rows that actually differ, so once filled it is a no-op.
+let partDieNamesChecked = false;
+function backfillPartDieNames() {
+  if (partDieNamesChecked) return;
+  partDieNamesChecked = true;
+  const stale = store.parts.filter((p) => {
+    const want = dieNameOf(p.ToolId);
+    return want && String(p.DieName || "") !== want;
+  });
+  if (!stale.length) return;
+  stale.forEach((p) => { p.DieName = dieNameOf(p.ToolId); });
+  saveCacheToLocalStorage();
+  queueWrite(batchPayload(stale.map((p) => ({
+    sheet: "Parts", row: { ...p, CreatedAt: isoStamp(p.CreatedAt) }, key_column: "PartId",
+  }))), { failMsg: "Could not add die names to the Parts sheet." });
 }
 
 const reloadTools = async () => { store.tools = await sheetRead("Tools"); saveCacheToLocalStorage(); };
@@ -580,6 +600,11 @@ function listTools() {
     .slice()
     .sort((a, b) => String(b.CreatedAt || "").localeCompare(String(a.CreatedAt || "")));
 }
+
+// Parts carry the die's readable name (Tools.Description) in a DieName column,
+// same denormalization as Operations/ChildParts, so the raw Parts tab shows
+// which die a ToolId is — two dies can have look-alike ids (PT 288 / PT-288).
+const dieNameOf = (toolId) => { const t = store.tools.find((x) => String(x.ToolId) === String(toolId)); return t ? (t.Description || "") : ""; };
 
 const findTool = (toolId) => store.tools.find((t) => String(t.ToolId) === String(toolId)) || null;
 
@@ -675,11 +700,13 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
   // same cascade renameTool does, just without a key change.
   const affectedOps = descChanged ? store.operations.filter((o) => String(o.ToolId) === String(toolId)) : [];
   const affectedOutsource = descChanged ? store.outsourceEntries.filter((o) => String(o.ToolId) === String(toolId)) : [];
+  const affectedParts = descChanged ? store.parts.filter((p) => String(p.ToolId) === String(toolId)) : [];
   const affectedChildParts = descChanged ? store.childParts.filter((c) => String(c.ToolId) === String(toolId)) : [];
   if (descChanged) {
     affectedOps.forEach((o) => { o.DieName = fields.Description; });
     affectedOutsource.forEach((o) => { o.DieName = fields.Description; });
     affectedChildParts.forEach((c) => { c.DieName = fields.Description; });
+    affectedParts.forEach((p) => { p.DieName = fields.Description; });
     saveCacheToLocalStorage();
   }
 
@@ -687,6 +714,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
   affectedOps.forEach((o) => items.push({ sheet: "Operations", row: { ...o }, key_column: "Id" }));
   affectedOutsource.forEach((o) => items.push({ sheet: "OutsourceEntries", row: { ...o }, key_column: "Id" }));
   affectedChildParts.forEach((c) => items.push({ sheet: "ChildParts", row: { ...c }, key_column: "ChildId" }));
+  affectedParts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, CreatedAt: isoStamp(p.CreatedAt) }, key_column: "PartId" }));
   queueWrite(
     items.length > 1 ? batchPayload(items) : upsertPayload("Tools", fields, "ToolId"),
     {
@@ -696,6 +724,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
         affectedOps.forEach((o) => { o.DieName = before.Description; });
         affectedOutsource.forEach((o) => { o.DieName = before.Description; });
         affectedChildParts.forEach((c) => { c.DieName = before.Description; });
+        affectedParts.forEach((p) => { p.DieName = before.Description; });
         saveCacheToLocalStorage();
       },
     }
@@ -722,7 +751,7 @@ async function renameTool(oldId, newId, fields) {
   const scheduleActivities = store.scheduleActivities.filter((a) => String(a.ToolId) === String(oldId));
 
   const items = [{ sheet: "Tools", row: renamed, key_column: "ToolId" }];
-  parts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, ToolId: newId }, key_column: "PartId" }));
+  parts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, ToolId: newId, DieName: renamed.Description }, key_column: "PartId" }));
   ops.forEach((o) => items.push({ sheet: "Operations", row: { ...o, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
   outsourceEntries.forEach((o) => items.push({ sheet: "OutsourceEntries", row: { ...o, ToolId: newId, DieName: renamed.Description }, key_column: "Id" }));
   childParts.forEach((c) => items.push({ sheet: "ChildParts", row: { ...c, ToolId: newId, DieName: renamed.Description }, key_column: "ChildId" }));
@@ -788,6 +817,7 @@ async function addPart(toolId, { name, partId, material, roughSize, qty }) {
   const row = {
     PartId: id,
     ToolId: toolId,
+    DieName: tool.Description || "",
     Seq: seq,
     Name: name.trim(),
     Material: (material || "").trim(),
@@ -808,6 +838,7 @@ async function updatePart(partId, { name, material, roughSize, qty }) {
   if (!part) throw new Error("Part not found");
   const row = {
     ...part,
+    DieName: dieNameOf(part.ToolId),
     Name: name != null ? name.trim() : part.Name,
     Material: material != null ? material.trim() : part.Material,
     RoughSize: roughSize != null ? roughSize.trim() : part.RoughSize,
@@ -867,6 +898,7 @@ function addPartsBulk(toolId, names) {
     const row = {
       PartId: `${toolId}-P${pad(seq)}`,
       ToolId: toolId,
+      DieName: tool.Description || "",
       Seq: seq,
       Name: name,
       Material: "",
@@ -916,6 +948,7 @@ async function updatePartsBulk(edits) {
     const part = findPart(e.partId);
     if (!part) return;
     const fields = {
+      DieName: dieNameOf(part.ToolId),
       Material: e.material != null ? String(e.material).trim() : part.Material,
       RoughSize: e.roughSize != null ? String(e.roughSize).trim() : part.RoughSize,
       Qty: e.qty != null ? Number(e.qty) || 1 : part.Qty,
