@@ -1418,12 +1418,13 @@ $("refresh-open-btn-add").addEventListener("click", refreshFromSheet);
 // Cheap by design (see pollLive in sheet.js): ONE request for both tabs, and
 // the script answers "unchanged" without reading a single tab when nothing was
 // written. Ticks every 4 s while someone is using the tablet, every 12 s when
-// it sits idle; a full download is forced once a minute because a hand edit
+// it sits idle; a full download is forced every 20 s (60 s idle) because a hand edit
 // made straight in the Sheet does not bump the script's change counter.
 const SYNC_TICK_MS = 4000;
 const SYNC_IDLE_MS = 12000;
 const SYNC_ACTIVE_WINDOW_MS = 60000;
-const SYNC_FULL_EVERY_MS = 60000;
+const SYNC_FULL_EVERY_MS = 20000;
+const SYNC_FULL_IDLE_EVERY_MS = 60000;
 let syncInFlight = false;
 let lastUserActivity = Date.now();
 let lastSyncAt = 0;
@@ -1440,10 +1441,16 @@ async function backgroundSync(catchUp) {
   syncInFlight = true;
   lastSyncAt = now;
   try {
-    const full = now - lastFullSyncAt > SYNC_FULL_EVERY_MS;
+    const full = now - lastFullSyncAt > (idle ? SYNC_FULL_IDLE_EVERY_MS : SYNC_FULL_EVERY_MS);
     const changed = await pollLive(full);
     if (full) lastFullSyncAt = now;
     if (!changed) return;
+    refreshToolSelects();
+    refreshParts();
+    refreshChildPartsTable();
+    refreshDieStatusTable();
+    refreshDieInfoBox();
+    refreshEmployeeTable();
     refreshOpenOps();
     refreshOutsourceTable();
     refreshOutsourceOpenTable();

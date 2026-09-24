@@ -478,16 +478,27 @@ let liveVersion = null;
 async function pollLive(full) {
   if (outbox.length) { if (!outboxWaiting) flushOutbox(); return false; }
   const since = full || forceFullRead || liveVersion === null ? -1 : liveVersion;
-  const res = await sheetReadManyVersioned(["Operations", "OutsourceEntries"], since);
+  const res = await sheetReadManyVersioned(LIVE_TABS, since);
   if (res.unchanged) return false;
   if (outbox.length) return false; // a write was queued mid-fetch — don't overwrite it
-  store.operations = res.data.Operations;
-  store.outsourceEntries = res.data.OutsourceEntries;
+  const d = res.data;
+  const next = {
+    tools: d.Tools, parts: d.Parts, employees: d.Employees, operations: d.Operations,
+    customStages: d.CustomStages, outsourceEntries: d.OutsourceEntries, childParts: d.ChildParts,
+    scheduleActivities: normaliseScheduleRows(d.Schedule),
+  };
+  // Only swap in (and tell the screen to redraw) what actually differs, so a
+  // poll that finds nothing new never disturbs what someone is typing.
+  let changed = false;
+  for (const k of Object.keys(next)) {
+    if (JSON.stringify(store[k]) !== JSON.stringify(next[k])) { store[k] = next[k]; changed = true; }
+  }
   liveVersion = res.v;
   forceFullRead = false;
-  saveCacheToLocalStorage();
-  return true;
+  if (changed) saveCacheToLocalStorage();
+  return changed;
 }
+const LIVE_TABS = ["Tools", "Parts", "Employees", "Operations", "CustomStages", "OutsourceEntries", "ChildParts", "Schedule"];
 
 async function loadAll() {
   // Never replace the screen's data while changes are still waiting to reach
