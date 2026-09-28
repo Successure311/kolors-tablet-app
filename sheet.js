@@ -288,10 +288,21 @@ function nowParts() {
   };
 }
 
-const nowStamp = () => {
+// CreatedDate/CreatedTime for a brand-new Tools/Parts/Employees/CustomStages
+// row — kept as two plain fields (not one combined stamp) so the raw sheet
+// matches the Date/Time-column shape used everywhere else (StartDate/
+// StartTime, Date/Time on OperationHistory, ...).
+function createdNow() {
   const n = nowParts();
-  return `${n.date} ${n.time}`;
-};
+  return { CreatedDate: n.date, CreatedTime: n.time };
+}
+
+// Keeps an existing row's CreatedDate/CreatedTime in their plain shape when
+// rewriting it (same idea as StartDate/StartTime being re-sent through
+// isoDate()/isoTime() below) — never invents a new creation time.
+function keepCreated(row) {
+  return { CreatedDate: isoDate(row.CreatedDate), CreatedTime: isoTime(row.CreatedTime) };
+}
 
 const newOperationId = () => `M-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -539,7 +550,7 @@ function backfillPartDieNames() {
   stale.forEach((p) => { p.DieName = dieNameOf(p.ToolId); });
   saveCacheToLocalStorage();
   queueWrite(batchPayload(stale.map((p) => ({
-    sheet: "Parts", row: { ...p, CreatedAt: isoStamp(p.CreatedAt) }, key_column: "PartId",
+    sheet: "Parts", row: { ...p, ...keepCreated(p) }, key_column: "PartId",
   }))), { failMsg: "Could not add die names to the Parts sheet." });
 }
 
@@ -581,10 +592,10 @@ function allKnownStages() {
 function rememberCustomStage(name) {
   const n = (name || "").trim();
   if (!n || STAGES.includes(n) || store.customStages.some((c) => c.Name === n)) return;
-  store.customStages.push({ Name: n, CreatedAt: nowStamp() });
+  store.customStages.push({ Name: n, ...createdNow() });
   saveCacheToLocalStorage();
 
-  queueWrite(upsertPayload("CustomStages", { Name: n, CreatedAt: nowStamp() }, "Name"), {
+  queueWrite(upsertPayload("CustomStages", { Name: n, ...createdNow() }, "Name"), {
     failMsg: `Could not save new department/machine "${n}" to the Google Sheet — undone.`,
     rollback: () => {
       store.customStages = store.customStages.filter((c) => c.Name !== n);
@@ -595,10 +606,12 @@ function rememberCustomStage(name) {
 
 // ---------- tools ----------
 
+const createdKey = (row) => `${row.CreatedDate || ""} ${row.CreatedTime || ""}`;
+
 function listTools() {
   return store.tools
     .slice()
-    .sort((a, b) => String(b.CreatedAt || "").localeCompare(String(a.CreatedAt || "")));
+    .sort((a, b) => createdKey(b).localeCompare(createdKey(a)));
 }
 
 // Parts carry the die's readable name (Tools.Description) in a DieName column,
@@ -625,7 +638,7 @@ function createTool({ toolId, description, productName, typeOfProject, projectSt
     NextPartSeq: 1,
     ScheduleRangeStart: "",
     ScheduleRangeEnd: "",
-    CreatedAt: nowStamp(),
+    ...createdNow(),
   };
   // Auto-populate the fixed 17-activity Project Schedule template, so the
   // schedule table appears fully filled in immediately — same identity-row
@@ -678,7 +691,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
       ProductName: productName != null ? productName.trim() : tool.ProductName,
       TypeOfProject: typeOfProject != null ? typeOfProject.trim() : tool.TypeOfProject,
       ProjectStartDate: projectStartDate != null ? projectStartDate.trim() : tool.ProjectStartDate,
-      CreatedAt: isoStamp(tool.CreatedAt),
+      ...keepCreated(tool),
     };
     return renameTool(toolId, newId, fields);
   }
@@ -691,7 +704,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
   if (projectStartDate != null) tool.ProjectStartDate = projectStartDate.trim();
   saveCacheToLocalStorage();
 
-  const fields = { ...tool, CreatedAt: isoStamp(tool.CreatedAt) };
+  const fields = { ...tool, ...keepCreated(tool) };
 
   // DieName is denormalized onto every Operations/OutsourceEntries/
   // ChildParts row for this die (so the Entries/Outsource tables and the raw
@@ -714,7 +727,7 @@ async function updateTool(toolId, { newToolId, description, productName, typeOfP
   affectedOps.forEach((o) => items.push({ sheet: "Operations", row: { ...o }, key_column: "Id" }));
   affectedOutsource.forEach((o) => items.push({ sheet: "OutsourceEntries", row: { ...o }, key_column: "Id" }));
   affectedChildParts.forEach((c) => items.push({ sheet: "ChildParts", row: { ...c }, key_column: "ChildId" }));
-  affectedParts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, CreatedAt: isoStamp(p.CreatedAt) }, key_column: "PartId" }));
+  affectedParts.forEach((p) => items.push({ sheet: "Parts", row: { ...p, ...keepCreated(p) }, key_column: "PartId" }));
   queueWrite(
     items.length > 1 ? batchPayload(items) : upsertPayload("Tools", fields, "ToolId"),
     {
@@ -825,7 +838,7 @@ async function addPart(toolId, { name, partId, material, roughSize, qty }) {
     Qty: Number(qty || 1) || 1,
     DesignReady: "N",
     CodeReady: "N",
-    CreatedAt: nowStamp(),
+    ...createdNow(),
   };
   await sheetUpsert("Parts", row, "PartId");
   await sheetUpsert("Tools", { ...tool, NextPartSeq: seq + 1 }, "ToolId");
@@ -843,18 +856,11 @@ async function updatePart(partId, { name, material, roughSize, qty }) {
     Material: material != null ? material.trim() : part.Material,
     RoughSize: roughSize != null ? roughSize.trim() : part.RoughSize,
     Qty: qty != null ? Number(qty) || 1 : part.Qty,
-    CreatedAt: isoStamp(part.CreatedAt),
+    ...keepCreated(part),
   };
   await sheetUpsert("Parts", row, "PartId");
   await reloadParts();
   return row;
-}
-
-// Keeps an existing CreatedAt in "YYYY-MM-DD HH:MM:SS" shape when rewriting a row.
-function isoStamp(v) {
-  const d = asDate(v);
-  if (!d) return v == null ? "" : String(v);
-  return `${isoDate(v)} ${isoTime(v)}`;
 }
 
 // Removed from the screen immediately; the sheet delete (part + its
@@ -906,7 +912,7 @@ function addPartsBulk(toolId, names) {
       Qty: 1,
       DesignReady: "N",
       CodeReady: "N",
-      CreatedAt: nowStamp(),
+      ...createdNow(),
     };
     seq += 1;
     return row;
@@ -955,7 +961,7 @@ async function updatePartsBulk(edits) {
     };
     const newId = (e.newPartId || "").trim();
     if (newId && newId !== part.PartId) {
-      renames.push({ oldId: part.PartId, newId, fields: { ...part, ...fields, CreatedAt: isoStamp(part.CreatedAt) } });
+      renames.push({ oldId: part.PartId, newId, fields: { ...part, ...fields, ...keepCreated(part) } });
       return;
     }
     before.push({ ...part });
@@ -966,7 +972,7 @@ async function updatePartsBulk(edits) {
   if (plainUpdates.length) {
     saveCacheToLocalStorage();
     queueWrite(batchPayload(plainUpdates.map((row) => ({
-      sheet: "Parts", row: { ...row, CreatedAt: isoStamp(row.CreatedAt) }, key_column: "PartId",
+      sheet: "Parts", row: { ...row, ...keepCreated(row) }, key_column: "PartId",
     }))), {
       failMsg: "Could not save part changes to the Google Sheet — undone.",
       rollback: () => {
@@ -1424,7 +1430,7 @@ function updatePartStatus(partId, { designReady, codeReady }) {
   if (codeReady != null) part.CodeReady = codeReady;
   saveCacheToLocalStorage();
 
-  const row = { ...part, CreatedAt: isoStamp(part.CreatedAt) };
+  const row = { ...part, ...keepCreated(part) };
   queueWrite(upsertPayload("Parts", row, "PartId"), {
     failMsg: `Could not save status for part ${partId} to the Google Sheet — undone.`,
     rollback: () => {
@@ -1464,7 +1470,7 @@ function createEmployee(name, shift, machine) {
   if (!m) throw new Error("Machine is required");
   if (findEmployee(n)) throw new Error(`Employee ${n} already exists`);
   rememberCustomStage(m);
-  const row = { Name: n, Shift: shift, Machine: m, CreatedAt: nowStamp() };
+  const row = { Name: n, Shift: shift, Machine: m, ...createdNow() };
 
   store.employees.push(row);
   saveCacheToLocalStorage();
@@ -1494,7 +1500,7 @@ function updateEmployee(name, { shift, machine }) {
   emp.Machine = m;
   saveCacheToLocalStorage();
 
-  const row = { ...emp, CreatedAt: isoStamp(emp.CreatedAt) };
+  const row = { ...emp, ...keepCreated(emp) };
   queueWrite(upsertPayload("Employees", row, "Name"), {
     failMsg: `Could not save changes to employee ${name} to the Google Sheet — undone.`,
     rollback: () => {
@@ -1530,11 +1536,13 @@ function listOperations() {
     .sort((a, b) => startKey(b).localeCompare(startKey(a)));
 }
 
-// Waiting is still open (no Y answer to "Task Completed?" yet) — it blocks
-// the part elsewhere exactly like Working does, same rule as the dashboard.
+// Setup (setup started, actual work not yet started) and Waiting (no Y
+// answer to "Task Completed?" yet) are both still open — they block the part
+// elsewhere exactly like Working does, same rule as the dashboard.
 const openOperationFor = (partId) =>
   store.operations.find(
-    (o) => String(o.PartId) === String(partId) && (o.Status === "Working" || o.Status === "Waiting")
+    (o) => String(o.PartId) === String(partId) &&
+      (o.Status === "Setup" || o.Status === "Working" || o.Status === "Waiting")
   ) || null;
 
 /* Per-department status for one part — mirrors part_stage_matrix() in
@@ -1558,7 +1566,7 @@ function partStageMatrix(partId) {
     const op = byStage[stage];
     matrix[stage] = op
       ? {
-          status: op.Status === "Working" || op.Status === "Waiting" ? op.Status : "Done",
+          status: op.Status === "Setup" || op.Status === "Working" || op.Status === "Waiting" ? op.Status : "Done",
           operator: op.Operator,
           start_time: `${isoDate(op.StartDate)} ${isoTime(op.StartTime)}`.trim(),
           end_time: `${isoDate(op.EndDate)} ${isoTime(op.EndTime)}`.trim(),
@@ -1658,7 +1666,7 @@ function startOperation({ toolId, partId, stage, operator }) {
     EndDate: "",
     EndTime: "",
     Shift: employee.Shift || "",
-    Status: "Working",
+    Status: "Setup",
     WaitingCount: 0,
     Id: newOperationId(),
   };
@@ -1670,11 +1678,13 @@ function startOperation({ toolId, partId, stage, operator }) {
   // Server re-checks under a lock — the local openOperationFor() check above
   // only guards against this same tablet's own stale cache; this is what
   // actually stops two devices both winning the same Start. One request: it
-  // also appends the "Started" history row.
+  // also appends the "Setup" history row — the operator hasn't started the
+  // timed production run yet, just tool/machine setup (see
+  // startActualWorkOperation() below for the Setup -> Working step).
   queueWrite({
-    action: "start_operation", sheet: "Operations", row, history: buildHistoryRow(row, "Started"),
+    action: "start_operation", sheet: "Operations", row, history: buildHistoryRow(row, "Setup"),
   }, {
-    failMsg: `Could not save "Start ${row.PartId}" to the Google Sheet — undone.`,
+    failMsg: `Could not save "Setup Start ${row.PartId}" to the Google Sheet — undone.`,
     group: `op:${row.Id}`,
     rollback: () => {
       store.operations = store.operations.filter((o) => o.Id !== row.Id);
@@ -1688,6 +1698,35 @@ function startOperation({ toolId, partId, stage, operator }) {
       notifyBackgroundError(
         `Part ${row.PartId} is already ${c.Status || "in progress"} at ${c.Department || "another department"} — someone else started it first.`
       );
+    },
+  });
+
+  return row;
+}
+
+// Setup -> Working: the operator has finished machine/tool setup and is now
+// starting the timed production run. Everything after this (Stop, the Y/N
+// "Task Completed?" popover, Waiting/Restart) behaves exactly as it already
+// did for a Working entry — this only changes what happens BEFORE that.
+function startActualWorkOperation(opId) {
+  const op = store.operations.find((o) => String(o.Id) === String(opId));
+  if (!op) throw new Error("That entry is no longer open — it may have been stopped elsewhere");
+  if (op.Status !== "Setup") throw new Error("Entry is not currently in Setup");
+
+  const prevStatus = op.Status;
+  op.Status = "Working";
+  const row = { ...op, StartDate: isoDate(op.StartDate), StartTime: isoTime(op.StartTime) };
+  saveCacheToLocalStorage();
+
+  queueWrite({
+    action: "op_update", sheet: "Operations", row, key_column: "Id",
+    history: buildHistoryRow(row, "Started"),
+  }, {
+    failMsg: `Could not save "Start Actual Work ${row.PartId}" to the Google Sheet — undone.`,
+    group: `op:${row.Id}`,
+    rollback: () => {
+      op.Status = prevStatus;
+      saveCacheToLocalStorage();
     },
   });
 

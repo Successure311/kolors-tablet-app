@@ -1160,11 +1160,13 @@ function partCardForStage(p, stage) {
   // needs doing at every other department. But a part is one physical object,
   // so it also can't be started here while it's currently open elsewhere.
   const stageInfo = p.stages[stage] || { status: "Pending" };
-  // Waiting is still open (no Y answer yet), so it blocks elsewhere exactly
-  // like Working does.
-  const openHere = stageInfo.status === "Working" || stageInfo.status === "Waiting";
+  // Setup (setup started, actual work not yet started) and Waiting (no Y
+  // answer yet) are both still open, so they block elsewhere exactly like
+  // Working does.
+  const openHere = stageInfo.status === "Setup" || stageInfo.status === "Working" || stageInfo.status === "Waiting";
   const workingElsewhere = !!p.current_operation_id && !openHere;
   if (stageInfo.status === "Done") return { label: t("wizard.doneHere"), cls: "done", clickable: false };
+  if (stageInfo.status === "Setup") return { label: t("wizard.setupHere"), cls: "setup", clickable: false };
   if (stageInfo.status === "Working") return { label: t("wizard.workingHere"), cls: "working", clickable: false };
   if (stageInfo.status === "Waiting") return { label: t("wizard.waitingHere"), cls: "waiting", clickable: false };
   if (workingElsewhere) return { label: t("wizard.workingElsewhere"), cls: "working", clickable: false };
@@ -1225,7 +1227,7 @@ ssStartBtn.addEventListener("click", async () => {
       stage: wizState.stage,
       operator: wizState.employee,
     });
-    showMsg(ssMsg, t("wizard.started", { part: op.PartId, stage: machineLabel(op.Department), operator: employeeLabel(op.Operator) }), true);
+    showMsg(ssMsg, t("wizard.setupStarted", { part: op.PartId, stage: machineLabel(op.Department), operator: employeeLabel(op.Operator) }), true);
     wizState.partId = null;
     wizState.employee = null;
     renderPartEmployeeStep();
@@ -1342,6 +1344,7 @@ $("wp-view-btn").addEventListener("click", () => {
 // once both are chosen — so it can say "no running task" outright, rather
 // than hiding an employee who happens to have nothing open right now. ----------
 function entryStatusLabel(status) {
+  if (status === "Setup") return t("entries.statusSetup");
   if (status === "Working") return t("entries.statusWorking");
   if (status === "Waiting") return t("entries.statusWaiting");
   return t("entries.statusDone");
@@ -1349,16 +1352,20 @@ function entryStatusLabel(status) {
 
 function renderOpsRows(tbody, ops, emptyMessage, showActions = true) {
   tbody.innerHTML = ops.map((o) => {
-    const statusClass = o.Status === "Working" ? "working" : o.Status === "Waiting" ? "waiting" : "done";
-    // Waiting hasn't been finished yet — offer Restart (resume to Working)
-    // instead of Stop; once it's Working again, Stop asks Y/N as usual.
-    // Add Entry's table is view-only — stopping/restarting only happens in
-    // Work Progress, so no action button is rendered there.
-    const actionBtn = !showActions ? "" : o.Status === "Working"
-      ? `<button type="button" class="stop-entry-btn" data-id="${esc(o.Id)}">${t("entries.stop")}</button>`
-      : o.Status === "Waiting"
-        ? `<button type="button" class="restart-entry-btn" data-id="${esc(o.Id)}">${t("entries.restart")}</button>`
-        : "";
+    const statusClass = o.Status === "Setup" ? "setup" : o.Status === "Working" ? "working" : o.Status === "Waiting" ? "waiting" : "done";
+    // Setup hasn't started the timed production run yet — offer Start Actual
+    // Work instead of Stop. Waiting hasn't been finished yet — offer Restart
+    // (resume to Working) instead of Stop; once it's Working again, Stop asks
+    // Y/N as usual. Add Entry's table is view-only — starting actual
+    // work/stopping/restarting only happens in Work Progress, so no action
+    // button is rendered there.
+    const actionBtn = !showActions ? "" : o.Status === "Setup"
+      ? `<button type="button" class="start-actual-btn" data-id="${esc(o.Id)}">${t("entries.startActualWork")}</button>`
+      : o.Status === "Working"
+        ? `<button type="button" class="stop-entry-btn" data-id="${esc(o.Id)}">${t("entries.stop")}</button>`
+        : o.Status === "Waiting"
+          ? `<button type="button" class="restart-entry-btn" data-id="${esc(o.Id)}">${t("entries.restart")}</button>`
+          : "";
     return `
     <tr>
       <td>${esc(o.ToolId)}</td><td>${esc(o.PartId)}</td><td>${esc(o.DieName || "")}</td><td>${esc(o.PartName || "")}</td>
@@ -1371,6 +1378,8 @@ function renderOpsRows(tbody, ops, emptyMessage, showActions = true) {
     </tr>`;
   }).join("") || `<tr><td colspan="13">${emptyMessage}</td></tr>`;
 
+  tbody.querySelectorAll(".start-actual-btn").forEach((btn) =>
+    btn.addEventListener("click", () => startActualWorkEntry(btn.dataset.id)));
   tbody.querySelectorAll(".stop-entry-btn").forEach((btn) =>
     btn.addEventListener("click", () => askTaskCompleted(btn, btn.dataset.id)));
   tbody.querySelectorAll(".restart-entry-btn").forEach((btn) =>
@@ -1570,6 +1579,20 @@ async function stopEntry(opId, completed) {
   }
 }
 
+// Setup -> Working: the operator finished setup and is starting the timed
+// production run. Stop (with the Y/N popover) is offered from here on,
+// exactly as it already was for a Working entry.
+async function startActualWorkEntry(opId) {
+  try {
+    const op = await startActualWorkOperation(opId);
+    showMsg(wpMsg, t("entries.actualWorkStartedMsg", { part: op.PartId }), true);
+    refreshOpenOps();
+    refreshWizPartStepIfActive();
+  } catch (err) {
+    showMsg(wpMsg, errText(err, t("entries.startActualWorkFailed")));
+  }
+}
+
 // Restart puts a Waiting entry back to Working — no Y/N asked here, that
 // only happens again once Stop is pressed on it.
 async function restartEntry(opId) {
@@ -1677,6 +1700,7 @@ const trackResult = $("track-result");
 
 function stageCellLabel(cell) {
   if (cell.status === "Pending") return t("track.statusPending");
+  if (cell.status === "Setup") return t("track.statusSetup");
   if (cell.status === "Working") return t("track.statusRunning");
   if (cell.status === "Waiting") return t("track.statusWaiting");
   if (cell.status === "OutSource") return t("track.statusOutsource");
@@ -1685,6 +1709,7 @@ function stageCellLabel(cell) {
 
 function stageCellClass(cell) {
   if (cell.status === "Pending") return "pending";
+  if (cell.status === "Setup") return "setup";
   if (cell.status === "Working") return "working";
   if (cell.status === "Waiting") return "waiting";
   if (cell.status === "OutSource") return "outsource";
@@ -1694,6 +1719,7 @@ function stageCellClass(cell) {
 function stageCellTitle(cell) {
   if (cell.status === "Pending") return "";
   const who = cell.operator ? t("track.by", { who: employeeLabel(cell.operator) }) : "";
+  if (cell.status === "Setup") return t("track.startedSetup", { time: cell.start_time, who });
   if (cell.status === "Working") return t("track.startedAt", { time: cell.start_time, who });
   if (cell.status === "Waiting") return t("track.startedWaiting", { time: cell.start_time, who });
   return `${cell.start_time} → ${cell.end_time}${who}`;

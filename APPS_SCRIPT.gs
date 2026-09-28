@@ -156,6 +156,27 @@
  *  (4) batch no longer clearContents()+rewrites the whole tab: it writes only
  *      the rows it actually changed, and only re-applies Plain Text format to
  *      columns that are new instead of to every column on every call.
+ *
+ * What changed since then: added a "Setup" step before "Working" on
+ * Operations. Add Entry's Start now creates the entry as Setup (setup
+ * started, not the timed run yet); a new "op_update"-based step (triggered
+ * from the tablet's Work Progress screen) moves it Setup -> Working when the
+ * operator actually starts the run. Stop/Waiting/Restart/Y-N are unchanged —
+ * they only ever applied to Working anyway. start_operation's open-part
+ * conflict check now also treats "Setup" as open (alongside Working/
+ * Waiting), so a part mid-setup still can't be started twice.
+ *
+ * What changed since then: added a "tidy_sheets" action (and its
+ * tidyAllSheets() editor-runnable twin) — cosmetic-only sheet tidy-up: adds
+ * a leading "S.No" column (1..end by row position) to every known tab,
+ * reorders/trims columns to TIDY_SCHEMA (its own list, separate from SCHEMA
+ * above — "cleanup" is completely unchanged), and splits any legacy combined
+ * "CreatedAt" (Tools/Parts/Employees/CustomStages) into CreatedDate +
+ * CreatedTime, matching the Date/Time-column shape used everywhere else.
+ * Purely a column-order/shape change: every read/write in this script is by
+ * header NAME, never position, so this doesn't touch how Start/Setup/Stop/
+ * Restart/etc. behave. Run tidyAllSheets() once from the editor (or POST
+ * {action:"tidy_sheets"}) any time you want the sheet tidied; safe to re-run.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -178,6 +199,119 @@ var SCHEMA = {
   // "cleanup" action below special-cases this tab so it never trims them.
   Schedule: ["Id", "ToolId", "DieName", "Activity", "IsCustom"]
 };
+
+// ===================== Sheet tidy: S.No + column order =====================
+// Target column order for the "tidy_sheets" action below — a leading "S.No"
+// (row position, 1..end) followed by that tab's own identifying column
+// (Id/PartDept/ChildId/OpId), then everything else. Separate from SCHEMA
+// above (which "cleanup" still uses exactly as before, untouched) so this is
+// purely additive: nothing here changes what "cleanup", upsert, delete,
+// start_operation, op_update or batch do. Every read/write anywhere in this
+// script is by header NAME (see readSheetRows/upsertRow) — never by column
+// position — so reordering columns, or adding S.No, changes nothing about
+// how Start/Setup/Stop/Restart/etc. behave. CreatedAt (Tools/Parts/
+// Employees/CustomStages) is split into CreatedDate + CreatedTime to match
+// the Date/Time-column shape used everywhere else (StartDate/StartTime,
+// Date/Time on OperationHistory) — tidySheet_() below fills those two from
+// any existing CreatedAt value it finds. Schedule is left out: its own Id is
+// already a 1..end serial number (see renumberSchedule_) and its Plan-date
+// columns are dynamic.
+var TIDY_SCHEMA = {
+  Admin: ["SNo", "LoginId", "Password"],
+  Workshop: ["SNo", "LoginId", "Password"],
+  Tools: ["SNo", "ToolId", "Description", "ProductName", "TypeOfProject", "ProjectStartDate", "NextPartSeq", "NextScheduleSeq", "ScheduleRangeStart", "ScheduleRangeEnd", "CreatedDate", "CreatedTime"],
+  Parts: ["SNo", "PartId", "ToolId", "DieName", "Seq", "Name", "Material", "RoughSize", "Qty", "DesignReady", "CodeReady", "CreatedDate", "CreatedTime"],
+  Employees: ["SNo", "Name", "Shift", "Machine", "CreatedDate", "CreatedTime"],
+  CustomStages: ["SNo", "Name", "CreatedDate", "CreatedTime"],
+  Operations: ["SNo", "Id", "ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "StartDate", "StartTime", "EndDate", "EndTime", "Shift", "Status", "WaitingCount"],
+  OperationHistory: ["SNo", "OpId", "ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "Shift", "WaitingCount", "Date", "Time", "Event", "CycleNo"],
+  OutsourceEntries: ["SNo", "Id", "ToolId", "PartId", "DieName", "PartName", "Process", "Place", "Duration", "StartDate", "StartTime", "EndDate", "EndTime", "Status"],
+  PartStatus: ["SNo", "PartDept", "ToolId", "PartId", "DieName", "PartName", "Department", "Operator", "StartDate", "StartTime", "EndDate", "EndTime", "Shift", "Status", "WaitingCount"],
+  ChildParts: ["SNo", "ChildId", "ToolId", "DieName", "ChildName", "Qty"]
+};
+
+// "YYYY-MM-DD HH:MM:SS" (or a Date cell, or an ISO "...T..." string) -> a
+// plain {date, time} pair — best-effort split of a legacy combined CreatedAt
+// value for the migration in tidySheet_() below.
+function splitCreatedAt_(v) {
+  if (Object.prototype.toString.call(v) === "[object Date]") {
+    var tz = Session.getScriptTimeZone();
+    return { date: Utilities.formatDate(v, tz, "yyyy-MM-dd"), time: Utilities.formatDate(v, tz, "HH:mm:ss") };
+  }
+  var s = String(v || "");
+  var m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/.exec(s);
+  return m ? { date: m[1], time: m[2] } : { date: s, time: "" };
+}
+
+// Reorders/trims ONE sheet's columns to `wanted` (S.No first, everything not
+// listed dropped) and (re)numbers S.No 1..end by current row order. Always
+// rewrites when called — cheap, and this only ever runs as an explicit,
+// on-demand maintenance step (see tidyAllSheets_ below), never on a normal
+// Start/Stop/etc. request.
+function tidySheet_(sheet, wanted) {
+  if (!sheet || sheet.getLastRow() < 1) return { rows: 0 };
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0].map(headerKey);
+  var snoIdx = wanted.indexOf("SNo");
+  var createdAtIdx = headers.indexOf("CreatedAt");
+
+  var newData = [wanted.slice()];
+  for (var r = 1; r < data.length; r++) {
+    var srcRow = data[r];
+    var legacyCreated = createdAtIdx >= 0 ? splitCreatedAt_(srcRow[createdAtIdx]) : null;
+    var newRow = wanted.map(function (h, i) {
+      if (i === snoIdx) return r;
+      var srcIdx = headers.indexOf(h);
+      if (srcIdx >= 0) return srcRow[srcIdx];
+      if (legacyCreated && h === "CreatedDate") return legacyCreated.date;
+      if (legacyCreated && h === "CreatedTime") return legacyCreated.time;
+      return "";
+    });
+    newData.push(newRow);
+  }
+
+  sheet.clearContents();
+  sheet.getRange(1, 1, newData.length, wanted.length).setValues(newData);
+  wanted.forEach(function (h, idx) { forceTextFormatIfDate(sheet, h, idx + 1); });
+  return { rows: newData.length - 1 };
+}
+
+// Runs tidySheet_ on every TIDY_SCHEMA tab that exists, and (same as
+// "cleanup") deletes any tab whose name isn't recognised by the app at all.
+// Safe to re-run any time.
+function tidyAllSheets_(ss) {
+  var keepNames = Object.keys(SCHEMA);
+  var result = { deletedSheets: [], tidied: [], skipped: [] };
+
+  ss.getSheets().forEach(function (sh) {
+    var name = sh.getName();
+    if (keepNames.indexOf(name) < 0) {
+      if (ss.getSheets().length > 1) { ss.deleteSheet(sh); result.deletedSheets.push(name); }
+      return;
+    }
+    if (name === "Schedule") return; // own dedicated tidy — see tidySchedule()
+    var wanted = TIDY_SCHEMA[name];
+    if (!wanted) { result.skipped.push(name); return; }
+    var r = tidySheet_(sh, wanted);
+    result.tidied.push({ sheet: name, rows: r.rows });
+  });
+  return result;
+}
+
+// Runnable straight from the Apps Script editor (Run > tidyAllSheets), same
+// pattern as tidySchedule()/renumberSchedule()/sortScheduleColumns() above.
+function tidyAllSheets() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var res = tidyAllSheets_(SpreadsheetApp.getActiveSpreadsheet());
+    SpreadsheetApp.flush();
+    bumpVersion();
+    return res;
+  } finally {
+    lock.releaseLock();
+  }
+}
 
 var DATE_HEADER_RE = /^\d{2}-\d{2}-\d{4}$/;
 
@@ -1072,6 +1206,16 @@ function handlePost(body) {
     return json({ ok: true, deletedSheets: deletedSheets, trimmedColumns: trimmedColumns });
   }
 
+  // ---- tidy every known tab: S.No first (renumbered 1..end by row
+  // position), columns reordered/trimmed to TIDY_SCHEMA, CreatedAt split
+  // into CreatedDate + CreatedTime — see tidyAllSheets_() above. Safe to
+  // re-run any time; touches nothing Start/Setup/Stop/Restart/etc. read. ----
+  if (action === "tidy_sheets") {
+    var tidyResult = tidyAllSheets_(ss);
+    SpreadsheetApp.flush();
+    return json({ ok: true, result: tidyResult });
+  }
+
   // ---- one-time repair for the "Schedule" tab's date-header corruption
   // (see the file header comment above). Defaults to a DRY RUN — reports
   // exactly what it would change without writing anything; only an explicit
@@ -1262,7 +1406,7 @@ function handlePost(body) {
   // being in the tab and answered {ok:true} without writing a second row. ----
   if (action === "start_operation" || action === "start_outsource") {
     var startRow = body.row;
-    var openStatuses = action === "start_operation" ? ["Working", "Waiting"] : ["OutSource"];
+    var openStatuses = action === "start_operation" ? ["Setup", "Working", "Waiting"] : ["OutSource"];
     if (!sheet) sheet = ss.insertSheet(sheetName);
     var sHeaders = sheet.getLastRow() > 0
       ? headerRow(sheet)

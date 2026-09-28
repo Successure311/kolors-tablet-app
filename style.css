@@ -202,6 +202,7 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
 #matrix-table th, #matrix-table td { padding: 7px 8px; }
 
 .status-cell.pending { color: #888; }
+.status-cell.setup { background: #dbe8ff; color: #1d4d8f; font-weight: 700; }
 .status-cell.working { background: #fff3cd; color: #8a6500; font-weight: 700; }
 .status-cell.waiting { background: #ffe1c2; color: #9a4d0a; font-weight: 700; }
 .status-cell.done { background: #d1f0e6; color: #146b53; font-weight: 700; }
@@ -235,6 +236,7 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
 .edit-part-btn, .edit-employee-btn { background: #457b9d; }
 .delete-part-btn, .delete-employee-btn { background: #e63946; }
 .stop-entry-btn { background: #e63946; padding: 8px 16px; font-size: 13px; }
+.start-actual-btn { background: #2a9d8f; padding: 8px 16px; font-size: 13px; }
 #part-cancel-edit-btn, #employee-cancel-edit-btn { background: #888; }
 
 #track-result { margin-top: 16px; }
@@ -285,6 +287,7 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
 .kpi-card:active { transform: scale(0.98); }
 .kpi-card small { display: block; font-weight: 400; color: #666; margin-top: 6px; font-size: 12px; }
 .kpi-card.pending { background: #eee; border-color: #cfd2d8; }
+.kpi-card.setup { background: #dbe8ff; border-color: #7ea6e6; }
 .kpi-card.working { background: #fff3cd; border-color: #e6c565; }
 .kpi-card.waiting { background: #ffe1c2; border-color: #f0ad4e; }
 .kpi-card.done { background: #d1f0e6; border-color: #8fd0b8; }
