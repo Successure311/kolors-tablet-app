@@ -177,6 +177,18 @@
  * header NAME, never position, so this doesn't touch how Start/Setup/Stop/
  * Restart/etc. behave. Run tidyAllSheets() once from the editor (or POST
  * {action:"tidy_sheets"}) any time you want the sheet tidied; safe to re-run.
+ *
+ * What changed since then: every place that ADDS a brand-new row (upsertRow,
+ * appendHistoryRow, applyBatch, and the start_operation/start_outsource
+ * append) now fills in that row's "S.No" itself — 1, 2, 3... by row
+ * position — whenever the tab already has an S.No column (added by
+ * tidyAllSheets() above). Before this, S.No was only ever set by running
+ * tidyAllSheets(); a fresh Start/Setup Start/OutSource entry (or any new
+ * Tool/Part/Employee) landed with S.No blank until the next manual tidy.
+ * Never touches an EXISTING row's S.No (only applied on the actual insert
+ * branch, never the update/merge branch), and relies on the same
+ * script-wide lock doPost already takes for every write, so two devices
+ * adding rows at once still can't collide on the same number.
  */
 
 // Canonical schema used only by the "cleanup" action — every sheet tab the
@@ -430,7 +442,17 @@ function appendHistoryRow(ss, hist) {
       sh.getRange(1, 1, 1, headers.length).setValues([headers]);
     }
   }
-  sh.appendRow(headers.map(function (h) { return hist[h] !== undefined ? hist[h] : ""; }));
+  var histValues = headers.map(function (h) { return hist[h] !== undefined ? hist[h] : ""; });
+  // Auto-number a leading S.No the same way tidySheet_() would, whenever the
+  // tab already has that column (added by the one-time "tidy_sheets" action)
+  // — sh.getLastRow() here is header + existing rows, i.e. exactly the next
+  // 1-indexed row number, and this whole request already runs under doPost's
+  // script-wide lock so two devices logging at once can't collide.
+  var histSnoIdx = headers.indexOf("SNo");
+  if (histSnoIdx >= 0 && (histValues[histSnoIdx] === "" || histValues[histSnoIdx] === undefined)) {
+    histValues[histSnoIdx] = sh.getLastRow();
+  }
+  sh.appendRow(histValues);
 }
 
 // Insert or update ONE row of `sheet` (already looked up/created by the
@@ -460,8 +482,20 @@ function upsertRow(sheet, row, keyColumn, insertOnly) {
   var values = headers.map(function (h) {
     return row[h] !== undefined ? row[h] : "";
   });
+  // Auto-number a leading S.No the same way tidySheet_() would, whenever the
+  // tab already has that column — only ever applied right before an actual
+  // INSERT (appendRow) below, never on the update/merge branch, so an
+  // existing row's S.No is never overwritten. sheet.getLastRow() at each
+  // append site below is still header + existing rows (nothing written
+  // in-between), i.e. exactly the next 1-indexed row number; this whole
+  // request already runs under doPost's script-wide lock.
+  var snoIdx = headers.indexOf("SNo");
+  var setSno = function () {
+    if (snoIdx >= 0 && (values[snoIdx] === "" || values[snoIdx] === undefined)) values[snoIdx] = sheet.getLastRow();
+  };
 
   if (insertOnly || !keyColumn) {
+    setSno();
     sheet.appendRow(values);
     return;
   }
@@ -489,6 +523,7 @@ function upsertRow(sheet, row, keyColumn, insertOnly) {
     var merged = headers.map(function (h, i) { return row[h] !== undefined ? row[h] : existingValues[i]; });
     sheet.getRange(foundRow, 1, 1, headers.length).setValues([merged]);
   } else {
+    setSno();
     sheet.appendRow(values);
   }
 }
@@ -980,6 +1015,14 @@ function applyBatch(ss, items) {
       });
       c.changed[foundIdx] = true;
     } else {
+      // Same auto-numbering as upsertRow()/appendHistoryRow() above — only on
+      // an actual insert, never on the merge branch. c.data.length here is
+      // header + every row queued so far in THIS batch, i.e. the next
+      // 1-indexed row number.
+      var batchSnoIdx = c.headers.indexOf("SNo");
+      if (batchSnoIdx >= 0 && (values[batchSnoIdx] === "" || values[batchSnoIdx] === undefined)) {
+        values[batchSnoIdx] = c.data.length;
+      }
       c.data.push(values);
       c.changed[c.data.length - 1] = true;
       if (name === "Parts") hooks.parts[row.PartId] = true;
@@ -1441,6 +1484,11 @@ function handlePost(body) {
       }
     }
     var startValues = sHeaders.map(function (h) { return startRow[h] !== undefined ? startRow[h] : ""; });
+    // Same auto-numbering as upsertRow()/appendHistoryRow() above.
+    var startSnoIdx = sHeaders.indexOf("SNo");
+    if (startSnoIdx >= 0 && (startValues[startSnoIdx] === "" || startValues[startSnoIdx] === undefined)) {
+      startValues[startSnoIdx] = sheet.getLastRow();
+    }
     sheet.appendRow(startValues);
     appendHistoryRow(ss, body.history);
     mirrorStatusRow(ss, action === "start_operation" ? opStatusRow(startRow) : outsourceStatusRow(startRow));
