@@ -923,16 +923,26 @@ employeeMachineSelect.addEventListener("change", () => {
 const employeeSubmitBtn = $("employee-submit-btn");
 const employeeCancelEditBtn = $("employee-cancel-edit-btn");
 
+// Machine-wise, shift-wise operators from the workshop's list (MACHINE_OPERATORS,
+// same as the Entry tab), then any employee that isn't on that list (these keep
+// Edit / Delete). Sorted by machine, then shift, then name.
 function refreshEmployeeTable() {
-  const employees = listEmployees();
-  employeeTableBody.innerHTML = employees.map((e) => `
+  const rows = [];
+  Object.keys(MACHINE_OPERATORS).forEach((m) =>
+    MACHINE_OPERATORS[m].forEach(([n, s]) => rows.push({ Name: n, Machine: m, Shift: s, listed: true })));
+  const listedKeys = new Set(rows.map((r) => operatorKey(r.Name)));
+  listEmployees().filter((e) => !listedKeys.has(operatorKey(e.Name)))
+    .forEach((e) => rows.push({ Name: e.Name, Machine: e.Machine || "", Shift: e.Shift || "", listed: false }));
+  rows.sort((x, y) => String(x.Machine).localeCompare(String(y.Machine)) ||
+    String(x.Shift).localeCompare(String(y.Shift)) || String(x.Name).localeCompare(String(y.Name)));
+  employeeTableBody.innerHTML = rows.map((e) => `
     <tr>
       <td>${esc(employeeLabel(e.Name))}</td>
-      <td>${esc(machineLabel(e.Machine || ""))}</td>
+      <td>${esc(machineLabel(e.Machine))}</td>
       <td>${esc(e.Shift)}</td>
-      <td class="row-actions">
+      <td class="row-actions">${e.listed ? "" : `
         <button type="button" class="edit-employee-btn" data-name="${esc(e.Name)}">${t("employees.edit")}</button>
-        <button type="button" class="delete-employee-btn" data-name="${esc(e.Name)}">${t("employees.delete")}</button>
+        <button type="button" class="delete-employee-btn" data-name="${esc(e.Name)}">${t("employees.delete")}</button>`}
       </td>
     </tr>`).join("") || `<tr><td colspan="4">${t("employees.none")}</td></tr>`;
   employeeTableBody.querySelectorAll(".edit-employee-btn").forEach((btn) =>
@@ -2209,6 +2219,19 @@ $("fill-sync-employees-btn").addEventListener("click", async () => {
   } finally {
     fillBusy = false;
   }
+});
+
+// Deletes every Employees-sheet row that isn't on the workshop's operator list.
+$("fill-remove-others-btn").addEventListener("click", () => {
+  if (fillBusy) return;
+  const listedKeys = new Set();
+  Object.keys(MACHINE_OPERATORS).forEach((m) => MACHINE_OPERATORS[m].forEach(([n]) => listedKeys.add(operatorKey(n))));
+  const others = store.employees.filter((e) => !listedKeys.has(operatorKey(e.Name)));
+  if (!others.length) { showMsg(fillMsg, t("fill.noOtherEmployees"), true); return; }
+  if (!window.confirm(t("fill.removeOthersConfirm", { count: others.length, names: others.map((e) => e.Name).join(", ") }))) return;
+  others.forEach((e) => deleteEmployee(e.Name));
+  refreshEverything();
+  showMsg(fillMsg, t("fill.othersRemoved", { count: others.length }), true);
 });
 
 fillUndoBtn.addEventListener("click", async () => {
