@@ -1321,10 +1321,10 @@ function renderPartEmployeeStep() {
   const partGrid = $("part-grid");
   const pq = importKey($("part-search").value);
   const shown = parts.filter((p) => !pq || importKey(p.name).includes(pq) || importKey(p.part_id).includes(pq));
-  // Every known plate name this die doesn't have yet is offered too; its Part
+  // The plate names the work log shows for THIS die (TOOL_PLATES) that it doesn't have yet are offered too; its Part
   // ID is only created when Setup Start is pressed (see the Start handler).
   const have = new Set(parts.map((p) => importKey(p.name)));
-  const suggestions = PLATE_NAMES.filter((n) => !have.has(importKey(n)) && (!pq || importKey(n).includes(pq)));
+  const suggestions = (TOOL_PLATES[String(wizState.toolId).toUpperCase()] || []).filter((n) => !have.has(importKey(n)) && (!pq || importKey(n).includes(pq)));
   $("part-other-wrap").hidden = !partOtherMode;
   partGrid.innerHTML = shown.map((p) => {
     const { label, cls, clickable } = partCardForStage(p, wizState.stage);
