@@ -372,7 +372,17 @@
           <!-- Step 2: Die -->
           <div id="wiz-step-die" class="wiz-step" hidden>
             <h2><span data-i18n="wizard.selectDiePrefix">Select Die — </span><span id="wiz-dept-label"></span></h2>
+            <input id="die-search" type="search" data-i18n-placeholder="wizard.dieSearchPlaceholder" placeholder="Search die number (e.g. 288)" autocomplete="off" />
             <div id="die-grid" class="kpi-grid"></div>
+            <div id="die-other-wrap" class="other-input-row" hidden>
+              <label><span data-i18n="wizard.otherDieIdLabel">Die ID</span>
+                <input id="die-other-id" data-i18n-placeholder="wizard.otherDieIdPlaceholder" placeholder="e.g. PT-263" autocomplete="off" />
+              </label>
+              <label><span data-i18n="wizard.otherPlateLabel">Plate Name</span>
+                <input id="die-other-plate" data-i18n-placeholder="wizard.otherPlatePlaceholder" placeholder="e.g. Middle Plate" autocomplete="off" />
+              </label>
+            </div>
+            <p id="die-other-msg" class="msg"></p>
           </div>
 
           <!-- Step 3: Part + Employee -->

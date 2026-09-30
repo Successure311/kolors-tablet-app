@@ -1045,7 +1045,10 @@ function showOutsourceStep() {
 
 function wizCanGoNext() {
   if (wizIndex === 0) return !!wizState.stage;
-  if (wizIndex === 1) return !!wizState.toolId;
+  if (wizIndex === 1) {
+    return !!wizState.toolId ||
+      (dieOtherMode && !!importClean($("die-other-id").value) && !!importClean($("die-other-plate").value));
+  }
   return false;
 }
 
@@ -1071,8 +1074,17 @@ $("wiz-prev-btn").addEventListener("click", () => {
   }
 });
 
+["die-search", "die-other-id", "die-other-plate"].forEach((id) => $(id).addEventListener("input", () => {
+  if (id === "die-search") renderDieGrid();
+  renderWizStep();
+}));
+
 $("wiz-next-btn").addEventListener("click", () => {
   if (!wizCanGoNext()) return;
+  if (wizIndex === 1 && dieOtherMode) {
+    try { commitOtherDie(); } catch (err) { showMsg($("die-other-msg"), errText(err, "")); return; }
+    showMsg($("die-other-msg"), "");
+  }
   wizIndex++;
   if (wizIndex === 1) renderDieGrid();
   if (wizIndex === 2) renderPartEmployeeStep();
@@ -1084,6 +1096,11 @@ const deptOtherWrap = $("dept-other-wrap");
 const deptOtherInput = $("dept-other-input");
 
 function goToDieStepWithStage(stage) {
+  dieOtherMode = false;
+  $("die-search").value = "";
+  $("die-other-id").value = "";
+  $("die-other-plate").value = "";
+  showMsg($("die-other-msg"), "");
   wizState.stage = stage;
   wizState.toolId = null;
   wizState.partId = null;
@@ -1101,18 +1118,10 @@ function renderDeptGrid() {
   // permanently (CustomStages tab) and show up as their own tile here from
   // then on, same as the dashboard.
   const knownStages = stagesForDeptGrid();
-  const isCustomStage = wizState.stage && !knownStages.includes(wizState.stage);
-  grid.innerHTML =
-    knownStages.map((s) =>
-      `<div class="kpi-card ${s === wizState.stage ? "selected" : ""}" data-stage="${esc(s)}">${esc(machineLabel(s))}</div>`
-    ).join("") +
-    `<div class="kpi-card other-tile ${isCustomStage ? "selected" : ""}" data-stage="${OTHER_STAGE_VALUE}">${t("common.other")}${isCustomStage ? `<small>${esc(wizState.stage)}</small>` : ""}</div>`;
+  grid.innerHTML = knownStages.map((s) =>
+    `<div class="kpi-card ${s === wizState.stage ? "selected" : ""}" data-stage="${esc(s)}">${esc(machineLabel(s))}</div>`
+  ).join("");
   grid.querySelectorAll(".kpi-card").forEach((card) => card.addEventListener("click", () => {
-    if (card.dataset.stage === OTHER_STAGE_VALUE) {
-      deptOtherWrap.hidden = false;
-      deptOtherInput.focus();
-      return;
-    }
     if (card.dataset.stage === OUTSOURCE_STAGE) {
       showOutsourceStep();
       return;
@@ -1125,8 +1134,17 @@ function renderDeptGrid() {
 // department (no employees assigned to it, no Pending default anywhere), so
 // it's kept out of allKnownStages() and only spliced into the two tile grids.
 const OUTSOURCE_STAGE = "OutSource";
+// The Entry tab only offers the shop's own machine list (same names as the
+// Machine Rates sheet / the Fill Data import) — not the old generic departments.
+const ENTRY_MACHINES = [
+  "Conventional Lathe", "Milling Machine + Power Feeder", "Small Grinding Machine - 1",
+  "Drilling Machine", "Radial Drilling Machine", "Grinding Machine - 2", "Grinding Machine - 3",
+  "CNC Milling Machine", "Wirecutting Machine", "EDM Drilling Machine", "EDM Machine",
+  "Wire cutting vendor -1", "Wire cutting vendor -2", "STD items", "Cylindrical grinding",
+  "Tool maker charges", "Bandsaw", "Tapping Machine",
+];
 function stagesForDeptGrid() {
-  return allKnownStages().concat([OUTSOURCE_STAGE]);
+  return ENTRY_MACHINES.concat([OUTSOURCE_STAGE]);
 }
 
 $("dept-other-continue-btn").addEventListener("click", () => {
@@ -1138,14 +1156,50 @@ deptOtherInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("dept-other-continue-btn").click();
 });
 
+// "Other…" on the die step: a die that isn't in the list yet, typed as ID +
+// plate name, created when Next is pressed (see commitOtherDie()).
+let dieOtherMode = false;
+
+function normalizeDieId(raw) {
+  const s = importClean(raw);
+  if (/^\d+[A-Za-z]?$/.test(s)) return `PT-${s}`.toUpperCase();
+  return s.replace(/^pt[\s-]*(?=\d)/i, "PT-").toUpperCase();
+}
+
+function commitOtherDie() {
+  const id = normalizeDieId($("die-other-id").value);
+  const plate = importClean($("die-other-plate").value).toUpperCase();
+  if (!id || !plate) throw new Error(t("wizard.otherDieNeedBoth"));
+  const tool = store.tools.find((x) => String(x.ToolId).toUpperCase() === id.toUpperCase())
+    || createTool({ toolId: id, description: id });
+  let part = store.parts.find((p) => String(p.ToolId) === String(tool.ToolId) && importKey(p.Name) === importKey(plate));
+  let isNewPart = false;
+  if (!part) { part = addPartsBulk(tool.ToolId, [plate])[0]; isNewPart = true; }
+  wizState.toolId = tool.ToolId;
+  wizState.partId = isNewPart ? part.PartId : null;
+  wizState.employee = null;
+  dieOtherMode = false;
+}
+
 function renderDieGrid() {
   $("wiz-dept-label").textContent = wizState.stage ? machineLabel(wizState.stage) : "";
-  const tools = listTools();
+  const q = importKey($("die-search").value);
+  const tools = listTools().filter((x) =>
+    !q || importKey(x.ToolId).includes(q) || importKey(x.Description).includes(q));
   const grid = $("die-grid");
-  grid.innerHTML = tools.length
-    ? tools.map((t) => `<div class="kpi-card" data-tool="${esc(t.ToolId)}">${esc(t.ToolId)}<small>${esc(t.Description)}</small></div>`).join("")
-    : `<p>${t("wizard.noDiesAdd")}</p>`;
+  $("die-other-wrap").hidden = !dieOtherMode;
+  grid.innerHTML = tools.map((t) => `<div class="kpi-card" data-tool="${esc(t.ToolId)}">${esc(t.ToolId)}<small>${esc(t.Description)}</small></div>`).join("") +
+    `<div class="kpi-card other-tile ${dieOtherMode ? "selected" : ""}" data-tool="${OTHER_STAGE_VALUE}">${t("common.other")}</div>`;
   grid.querySelectorAll(".kpi-card").forEach((card) => card.addEventListener("click", () => {
+    if (card.dataset.tool === OTHER_STAGE_VALUE) {
+      dieOtherMode = true;
+      wizState.toolId = null;
+      renderDieGrid();
+      renderWizStep();
+      $("die-other-id").focus();
+      return;
+    }
+    dieOtherMode = false;
     wizState.toolId = card.dataset.tool;
     wizState.partId = null;
     wizState.employee = null;
@@ -1188,7 +1242,7 @@ function renderPartEmployeeStep() {
       const { label, cls, clickable } = partCardForStage(p, wizState.stage);
       const selected = p.part_id === wizState.partId ? "selected" : "";
       return `<div class="kpi-card ${cls} ${clickable ? "" : "disabled"} ${selected}" data-part="${esc(p.part_id)}" data-clickable="${clickable}">
-        ${esc(p.part_id)}<small>${esc(p.name)}</small><small>${esc(label)}</small>
+        ${esc(p.name)}<small>${esc(p.part_id)}</small><small>${esc(label)}</small>
       </div>`;
     }).join("");
     partGrid.querySelectorAll('.kpi-card[data-clickable="true"]').forEach((card) =>
