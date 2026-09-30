@@ -14,6 +14,17 @@ const STAGES = [
   "VMC", "Wire Cut", "Heat Treatment", "Assembly",
 ];
 
+// The ONLY machines/departments the app knows — the workshop's own list (same
+// names as the Machine Rates sheet). Nothing typed or imported adds to it:
+// import rows are matched to these names, and unmatched machines are skipped.
+const FIXED_MACHINES = [
+  "Conventional Lathe", "Milling Machine + Power Feeder", "Small Grinding Machine - 1",
+  "Drilling Machine", "Radial Drilling Machine", "Grinding Machine - 2", "Grinding Machine - 3",
+  "CNC Milling Machine", "Wirecutting Machine", "EDM Drilling Machine", "EDM Machine",
+  "Wire cutting vendor -1", "Wire cutting vendor -2", "STD items", "Cylindrical grinding",
+  "Tool maker charges", "Bandsaw", "Tapping Machine",
+];
+
 // Hindi labels for the fixed STAGES above — mirrors STAGE_NAME_HI in
 // app/backend/models.py. Edit directly here to change wording.
 const STAGE_NAME_HI = {
@@ -34,10 +45,21 @@ const STAGE_NAME_HI = {
 };
 
 const SHIFTS = ["A", "B"];
+// The first nine mirror models.py; the rest are the plate/part names used in
+// the workshop's September 2026 work log, spelling variants merged (BOTTAM/
+// BOTTEM -> BOTTOM, STRIPPEER -> STRIPPER, ...) and with the extra words
+// stripped (M\C, SIZE, SETTING, RE-WORK, -1/-2) — names only, no descriptions.
 const PLATE_NAMES = [
   "TOP PLATE", "BOTTOM PLATE", "DIE PLATE", "PUNCH HOLDER",
   "PUNCH BACK PLATE", "STRIPPER PLATE", "STRIPPER BACK PLATE",
   "WIRE CUT PUNCH", "INSERT",
+  "DIE BACK PLATE", "DIE INSERT", "PUNCH", "STRIPPER INSERT", "STRIP GUIDE",
+  "GUIDE BLOCK", "PARALLEL BLOCK", "TOP SPACER", "PACKING PLATE", "BUFFER PLATE",
+  "BASE PLATE", "BENDING DIE", "BENDING PUNCH", "BENDING INSERT", "CUTTING PUNCH",
+  "LANCING PUNCH", "PILOT PUNCH", "PILOT PIN", "HIT PUNCH", "EMBOSSING DIE",
+  "EMBOSSING PUNCH", "EXTRUSION PUNCH", "SLOT WEDGE", "SLOT WEDGE PUNCH", "LIFTER",
+  "LINER", "CAM", "COLLAPSIBLE PLATE", "ELECTRODE", "TOOL HOLDER", "SLEEVE", "BUSH",
+  "WASHER", "DOWEL PIN", "SHOULDER BOLT", "WELDING FIXTURE",
 ];
 
 // Fixed manufacturing-activity template for a die's Project Schedule (Plan),
@@ -582,27 +604,14 @@ const reloadScheduleActivities = async () => {
 // then on — independent of whether any entry currently references it.
 
 function allKnownStages() {
-  const custom = store.customStages.map((c) => c.Name).filter(Boolean);
-  return STAGES.concat(custom.filter((s) => !STAGES.includes(s)).sort());
+  return FIXED_MACHINES.slice();
 }
 
 // Adds it to the local list immediately (so it's a real tile right away)
 // and pushes it to the sheet in the background — never makes the caller
 // wait on a network round trip.
-function rememberCustomStage(name) {
-  const n = (name || "").trim();
-  if (!n || STAGES.includes(n) || store.customStages.some((c) => c.Name === n)) return;
-  store.customStages.push({ Name: n, ...createdNow() });
-  saveCacheToLocalStorage();
-
-  queueWrite(upsertPayload("CustomStages", { Name: n, ...createdNow() }, "Name"), {
-    failMsg: `Could not save new department/machine "${n}" to the Google Sheet — undone.`,
-    rollback: () => {
-      store.customStages = store.customStages.filter((c) => c.Name !== n);
-      saveCacheToLocalStorage();
-    },
-  });
-}
+// Machines come only from FIXED_MACHINES — a name typed anywhere is never added.
+function rememberCustomStage() {}
 
 // ---------- tools ----------
 
@@ -1630,7 +1639,8 @@ function onBackgroundError(fn) {
   notifyBackgroundError = fn;
 }
 
-function startOperation({ toolId, partId, stage, operator }) {
+// `shift` (optional) overrides the employee's own shift — the same operator can work either shift on a machine.
+function startOperation({ toolId, partId, stage, operator, shift }) {
   const part = findPart(partId);
   if (!part || String(part.ToolId) !== String(toolId)) throw new Error("Part not found for this die");
   if (!(stage || "").trim()) throw new Error("Department is required");
@@ -1665,7 +1675,7 @@ function startOperation({ toolId, partId, stage, operator }) {
     StartTime: n.time,
     EndDate: "",
     EndTime: "",
-    Shift: employee.Shift || "",
+    Shift: shift || employee.Shift || "",
     Status: "Setup",
     WaitingCount: 0,
     Id: newOperationId(),
@@ -1928,6 +1938,9 @@ const IMPORT_NAME_ALIASES = {
   anand: "Anand", aanand: "Anand",
 };
 
+// The fixed-list machine whose (alias-merged) key matches, else "".
+const importFixedMachine = (mk) => FIXED_MACHINES.find((m) => importMachineKey(m) === mk) || "";
+
 const importClean = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
 const importKey = (s) => importClean(s).toLowerCase().replace(/[^a-z0-9]/g, "");
 const importTitle = (s) => importClean(s).toLowerCase().replace(/(^|\s)([a-z])/g, (m, a, c) => a + c.toUpperCase());
@@ -2088,7 +2101,7 @@ function buildImportPlan(sheets, opts = {}) {
   const overrides = opts.nameOverrides || {};
 
   // ---- pass 1: parse + tally spellings ----
-  const skipped = { noTool: 0, oddTool: 0, noStart: 0, noMachine: 0, nonMachine: 0, duplicate: 0 };
+  const skipped = { noTool: 0, oddTool: 0, noStart: 0, noMachine: 0, unknownMachine: 0, nonMachine: 0, duplicate: 0 };
   const oddTools = {};
   const parsed = [];
   const machineSpell = {}, plateSpell = {};
@@ -2106,6 +2119,7 @@ function buildImportPlan(sheets, opts = {}) {
     const machRaw = importClean(r[c.machine]);
     const mk = importMachineKey(machRaw);
     if (!mk) { skipped.noMachine += 1; return; }
+    if (!importFixedMachine(mk)) { skipped.unknownMachine += 1; return; }
     if (IMPORT_NON_MACHINE_KEYS.includes(mk) && !opts.includeNonMachines) { skipped.nonMachine += 1; return; }
     const plateRaw = c.plate >= 0 ? importClean(r[c.plate]) : "";
     const plateKey = importKey(plateRaw) || "unnamed";
@@ -2120,8 +2134,7 @@ function buildImportPlan(sheets, opts = {}) {
   });
 
   // ---- machines: existing spelling > "Machine Rates" spelling > most frequent ----
-  const existingStage = (mk) => allKnownStages().find((s) => importMachineKey(s) === mk);
-  const machineName = (mk) => existingStage(mk) || rateNames[mk] || importTop(machineSpell[mk] || {}) || mk;
+  const machineName = importFixedMachine;
 
   // ---- employees: log tallies + the Machine/Shift/Operator list ----
   const tally = {}; // name -> { mk -> { n, shifts:{A,B} } }
@@ -2161,7 +2174,7 @@ function buildImportPlan(sheets, opts = {}) {
       mk = importTop(counts);
       shift = importTop(tally[name][mk].shifts) || "";
     }
-    const lst = (listed[name] || []).filter((x) => knownMachines.has(x.mk));
+    const lst = (listed[name] || []).filter((x) => importFixedMachine(x.mk));
     if (!mk && lst.length) mk = lst[0].mk;
     if (!mk) return;
     if (!shift) {
@@ -2230,8 +2243,7 @@ function buildImportPlan(sheets, opts = {}) {
   operations.forEach((o) => importBump(machineCount, o.Department));
   employees.forEach((e) => { if (!(e.machine in machineCount)) machineCount[e.machine] = 0; });
   const machines = Object.keys(machineCount).sort().map((name) => ({
-    name, count: machineCount[name],
-    isNew: !STAGES.includes(name) && !store.customStages.some((s) => s.Name === name),
+    name, count: machineCount[name], isNew: false,
   }));
   const nonMachines = Object.keys(machineSpell).filter((mk) => IMPORT_NON_MACHINE_KEYS.includes(mk)).map((mk) => machineName(mk));
 

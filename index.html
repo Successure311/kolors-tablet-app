@@ -379,7 +379,8 @@
                 <input id="die-other-id" data-i18n-placeholder="wizard.otherDieIdPlaceholder" placeholder="e.g. PT-263" autocomplete="off" />
               </label>
               <label><span data-i18n="wizard.otherPlateLabel">Plate Name</span>
-                <input id="die-other-plate" data-i18n-placeholder="wizard.otherPlatePlaceholder" placeholder="e.g. Middle Plate" autocomplete="off" />
+                <input id="die-other-plate" list="plate-name-options" data-i18n-placeholder="wizard.otherPlatePlaceholder" placeholder="e.g. Middle Plate" autocomplete="off" />
+                <datalist id="plate-name-options"></datalist>
               </label>
             </div>
             <p id="die-other-msg" class="msg"></p>

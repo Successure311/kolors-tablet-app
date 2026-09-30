@@ -200,6 +200,7 @@ const TRANSLATIONS = {
     "wizard.continue": "Continue ▶",
     "wizard.selectDiePrefix": "Select Die — ",
     "wizard.dieSearchPlaceholder": "Search die number (e.g. 288)",
+    "wizard.shiftLabel": "Shift {shift}",
     "wizard.otherDieIdLabel": "Die ID",
     "wizard.otherDieIdPlaceholder": "e.g. PT-263",
     "wizard.otherPlateLabel": "Plate Name",

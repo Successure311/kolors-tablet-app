@@ -910,8 +910,7 @@ const employeeMachineOther = $("employee-machine-other");
 function loadEmployeeMachineOptions() {
   const prev = employeeMachineSelect.value;
   employeeMachineSelect.innerHTML =
-    allKnownStages().map((s) => `<option value="${esc(s)}">${esc(machineLabel(s))}</option>`).join("") +
-    `<option value="${OTHER_STAGE_VALUE}">${t("common.other")}</option>`;
+    allKnownStages().map((s) => `<option value="${esc(s)}">${esc(machineLabel(s))}</option>`).join("");
   if (allKnownStages().includes(prev)) employeeMachineSelect.value = prev;
 }
 
@@ -1136,13 +1135,7 @@ function renderDeptGrid() {
 const OUTSOURCE_STAGE = "OutSource";
 // The Entry tab only offers the shop's own machine list (same names as the
 // Machine Rates sheet / the Fill Data import) — not the old generic departments.
-const ENTRY_MACHINES = [
-  "Conventional Lathe", "Milling Machine + Power Feeder", "Small Grinding Machine - 1",
-  "Drilling Machine", "Radial Drilling Machine", "Grinding Machine - 2", "Grinding Machine - 3",
-  "CNC Milling Machine", "Wirecutting Machine", "EDM Drilling Machine", "EDM Machine",
-  "Wire cutting vendor -1", "Wire cutting vendor -2", "STD items", "Cylindrical grinding",
-  "Tool maker charges", "Bandsaw", "Tapping Machine",
-];
+const ENTRY_MACHINES = FIXED_MACHINES;
 function stagesForDeptGrid() {
   return ENTRY_MACHINES.concat([OUTSOURCE_STAGE]);
 }
@@ -1155,6 +1148,8 @@ $("dept-other-continue-btn").addEventListener("click", () => {
 deptOtherInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("dept-other-continue-btn").click();
 });
+
+$("plate-name-options").innerHTML = PLATE_NAMES.map((n) => `<option value="${esc(n)}"></option>`).join("");
 
 // "Other…" on the die step: a die that isn't in the list yet, typed as ID +
 // plate name, created when Next is pressed (see commitOtherDie()).
@@ -1228,6 +1223,38 @@ function partCardForStage(p, stage) {
   return { label: t("wizard.pending"), cls: "pending", clickable: true };
 }
 
+// Operators who work on each machine, from the workshop's Machine / Shift /
+// Operator list (spelling variants already merged). One operator can appear on
+// several machines here, so the Entry tab lists them all, in addition to
+// whoever is saved against that machine under Manage Employees. A name that
+// isn't an Employee yet is created on Start (see the Start handler below).
+const MACHINE_OPERATORS = {
+  "Bandsaw": [["Dhiraj", "A"], ["Rahul", "A"], ["Sonu", "A"], ["Sonu Raj", "A"], ["Sonu", "B"], ["Sonu Raj", "B"]],
+  "CNC Milling Machine": [["Parmod", "A"], ["Parth", "A"], ["Subhash", "A"], ["Parmod", "B"], ["Parth", "B"], ["Subhash", "B"]],
+  "Conventional Lathe": [["Anand", "A"], ["Lavhans", "A"], ["Anand", "B"]],
+  "Drilling Machine": [["Rohit", "A"], ["Lavhans", "A"], ["Dhiraj", "A"], ["Lavhans", "B"]],
+  "EDM Drilling Machine": [["Ravikant", "A"], ["Mahender", "A"], ["Sukindar", "A"], ["Mahender", "B"]],
+  "EDM Machine": [["Newal", "A"], ["Kewal", "A"], ["Sukindar", "A"], ["Newal", "B"]],
+  "Grinding Machine - 2": [["Rahul", "A"], ["Rohit", "A"], ["Kandhaiya", "A"], ["Subhash", "A"], ["Sonu Raj", "A"], ["Anand", "A"], ["Subhash", "B"], ["Sonu Raj", "B"], ["Piush", "B"]],
+  "Milling Machine + Power Feeder": [["Kandhaiya", "A"], ["Sonu", "A"], ["Rahul", "A"], ["Anand", "A"], ["Lavhans", "A"], ["Lavhans", "B"]],
+  "Radial Drilling Machine": [["Sonu Raj", "A"]],
+  "Small Grinding Machine - 1": [["Lavhans", "A"], ["Rohit", "A"], ["Dhiraj", "A"], ["Piush", "A"], ["Lavhans", "B"]],
+  "Tapping Machine": [["Lavhans", "A"], ["Kandhaiya", "A"], ["Rajan", "B"]],
+  "Wirecutting Machine": [["Ravikant", "A"], ["Mahender", "A"], ["Sukindar", "A"], ["Ravikant", "B"], ["Mahender", "B"], ["Sukindar", "B"]],
+};
+
+// [{ Name, Shift }] — employees fixed to this machine + the machine's listed
+// operators, one entry per name AND shift (the same person can work A or B).
+function operatorsForStage(stage) {
+  const list = employeesForStage(stage).map((e) => ({ Name: e.Name, Shift: e.Shift || "A" }));
+  (MACHINE_OPERATORS[stage] || []).forEach(([name, shift]) => {
+    const existing = store.employees.find((e) => importKey(e.Name) === importKey(name));
+    const use = existing ? existing.Name : name;
+    if (!list.some((x) => importKey(x.Name) === importKey(use) && x.Shift === shift)) list.push({ Name: use, Shift: shift });
+  });
+  return list.sort((a, b) => String(a.Name).localeCompare(String(b.Name)) || a.Shift.localeCompare(b.Shift));
+}
+
 function renderPartEmployeeStep() {
   $("wiz-die-label").textContent = wizState.toolId || "";
   $("wiz-dept-label-2").textContent = wizState.stage ? machineLabel(wizState.stage) : "";
@@ -1254,17 +1281,18 @@ function renderPartEmployeeStep() {
 
   // Only the employees fixed to this machine — each worker is assigned one
   // machine under "New Die / Add Parts", so that's who can be picked here.
-  const employees = employeesForStage(wizState.stage);
+  const employees = operatorsForStage(wizState.stage);
   const empGrid = $("employee-grid");
   empGrid.innerHTML = employees.length
     ? employees.map((e) => {
-        const selected = e.Name === wizState.employee ? "selected" : "";
-        return `<div class="kpi-card ${selected}" data-emp="${esc(e.Name)}">${esc(employeeLabel(e.Name))}</div>`;
+        const selected = e.Name === wizState.employee && e.Shift === wizState.employeeShift ? "selected" : "";
+        return `<div class="kpi-card ${selected}" data-emp="${esc(e.Name)}" data-shift="${esc(e.Shift)}">${esc(employeeLabel(e.Name))}<small>${t("wizard.shiftLabel", { shift: e.Shift })}</small></div>`;
       }).join("")
     : `<p>${t("wizard.noEmployeesAssigned", { stage: machineLabel(wizState.stage || "") })}</p>`;
   empGrid.querySelectorAll(".kpi-card").forEach((card) =>
     card.addEventListener("click", () => {
       wizState.employee = card.dataset.emp;
+      wizState.employeeShift = card.dataset.shift;
       renderPartEmployeeStep();
     }));
 
@@ -1276,11 +1304,16 @@ ssStartBtn.addEventListener("click", async () => {
   // Instant — startOperation() updates the screen right away and syncs to
   // the Google Sheet in the background, so there's nothing to wait on here.
   try {
+    if (!findEmployee(wizState.employee)) {
+      const listed = operatorsForStage(wizState.stage).find((x) => x.Name === wizState.employee);
+      createEmployee(wizState.employee, wizState.employeeShift || (listed && listed.Shift) || "A", wizState.stage);
+    }
     const op = await startOperation({
       toolId: wizState.toolId,
       partId: wizState.partId,
       stage: wizState.stage,
       operator: wizState.employee,
+      shift: wizState.employeeShift,
     });
     showMsg(ssMsg, t("wizard.setupStarted", { part: op.PartId, stage: machineLabel(op.Department), operator: employeeLabel(op.Operator) }), true);
     wizState.partId = null;
@@ -1367,7 +1400,7 @@ function enterWpEmployeeStep(stage) {
   // Entry, not narrowed further to who currently has something open. Picking
   // someone with nothing running right now is a valid outcome, not a dead
   // end: View just reports "no running task" for them.
-  wpEmpNames = employeesForStage(stage).map((e) => e.Name).sort();
+  wpEmpNames = Array.from(new Set(operatorsForStage(stage).map((e) => e.Name)));
   renderWpEmpTiles();
   renderWpStep();
 }
@@ -1966,7 +1999,7 @@ function renderFillPreview() {
   fillPreview.innerHTML = `
     <p><b>${p.totals.operations}</b> entries · <b>${p.totals.newMachines}</b> new machines · <b>${p.totals.newEmployees}</b> new operators ·
        <b>${p.totals.newTools}</b> new dies · <b>${p.totals.newParts}</b> new plates</p>
-    <p class="hint">Skipped: ${sk.noTool} without a Tool No. (No work…), ${sk.noStart} without a Start Time, ${sk.duplicate} duplicates` +
+    <p class="hint">Skipped: ${sk.noTool} without a Tool No. (No work…), ${sk.noStart} without a Start Time, ${sk.unknownMachine} on a machine not in the fixed list, ${sk.duplicate} duplicates` +
       `${sk.oddTool ? `, ${sk.oddTool} with a Tool No. that is not PT-<number> (${esc(p.oddTools.slice(0, 8).join(", "))}${p.oddTools.length > 8 ? "…" : ""})` : ""}` +
       `${sk.nonMachine ? `, ${sk.nonMachine} non-machine rows` : ""}.
       ${p.review.length ? `${p.review.length} rows have End Time before Start Time${$("fill-include-review").checked ? " (included)" : " (not imported)"}.` : ""}</p>
