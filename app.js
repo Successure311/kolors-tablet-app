@@ -247,6 +247,7 @@ async function enterNewToolAddMode() {
   refreshToolSelects();
   partToolSelect.value = "";
   dieInfoBox.hidden = true;
+  refreshFillUndo();
 }
 
 // Edit Existing Die: nothing but the Select Die dropdown shows until a die
@@ -1284,6 +1285,7 @@ function renderWpStep() {
   $("wp-prev-btn").disabled = wpStep === 0;
   $("wp-breadcrumb").textContent = wpFilter.stage ? machineLabel(wpFilter.stage) : "";
   if (wpStep === 0) renderWpDeptGrid();
+  refreshFillUndo();
 }
 
 function renderWpDeptGrid() {
@@ -1870,6 +1872,143 @@ function refreshEverything() {
 // changed since the last open. The very first-ever open on a device (no
 // cache yet) has nothing to show instantly, so that one case still waits on
 // the network, same as before.
+// ---------- Fill Data from Excel / CSV (admin, bottom of Add a New Die) ----------
+// Choosing a file only parses it and shows what WOULD be written; nothing is
+// saved until Import. See buildImportPlan()/runImport()/revertImport() in sheet.js.
+const fillFileInput = $("fill-file-input");
+const fillFileName = $("fill-file-name");
+const fillPreview = $("fill-preview");
+const fillImportBtn = $("fill-import-btn");
+const fillUndoBtn = $("fill-undo-btn");
+const fillUndoInfo = $("fill-undo-info");
+const fillMsg = $("fill-msg");
+let fillSheets = null;
+let fillPlan = null;
+let fillOverrides = {};
+let fillBusy = false;
+
+function refreshFillUndo() {
+  const info = latestImportInfo();
+  fillUndoBtn.disabled = !info || fillBusy;
+  fillUndoInfo.textContent = info
+    ? t("fill.lastImport", { batch: info.batch, ops: info.ops, emps: info.emps, parts: info.parts, dies: info.dies })
+    : t("fill.noImport");
+}
+
+function renderFillPreview() {
+  const p = fillPlan;
+  if (!p) { fillPreview.innerHTML = ""; fillImportBtn.disabled = true; return; }
+  const sk = p.skipped;
+  const rows = (arr) => arr.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("");
+  const machines = rows(p.machines.map((m) => [esc(m.name), m.count, m.isNew ? "NEW" : "exists"]));
+  const emps = p.employees.map((e) => `<tr>
+      <td><input type="text" class="fill-emp-name" data-name="${esc(e.name)}" value="${esc(e.name)}" ${e.isNew ? "" : "disabled"} /></td>
+      <td>${esc(e.machine)}</td><td>${e.shift}</td><td>${e.isNew ? "NEW" : "exists"}</td></tr>`).join("");
+  const sample = rows(p.operations.slice(0, 12).map((o) => [
+    esc(o.ToolId), esc(o.PartId), esc(o.PartName), esc(o.Department), esc(o.Operator),
+    `${esc(o.StartDate)} ${esc(o.StartTime.slice(0, 5))}`,
+    o.EndDate ? `${esc(o.EndDate)} ${esc(o.EndTime.slice(0, 5))}` : "", esc(o.Status),
+  ]));
+  fillPreview.innerHTML = `
+    <p><b>${p.totals.operations}</b> entries · <b>${p.totals.newMachines}</b> new machines · <b>${p.totals.newEmployees}</b> new operators ·
+       <b>${p.totals.newTools}</b> new dies · <b>${p.totals.newParts}</b> new plates</p>
+    <p class="hint">Skipped: ${sk.noTool} without a Tool No. (No work…), ${sk.noStart} without a Start Time, ${sk.duplicate} duplicates` +
+      `${sk.oddTool ? `, ${sk.oddTool} with a Tool No. that is not PT-<number> (${esc(p.oddTools.slice(0, 8).join(", "))}${p.oddTools.length > 8 ? "…" : ""})` : ""}` +
+      `${sk.nonMachine ? `, ${sk.nonMachine} non-machine rows` : ""}.
+      ${p.review.length ? `${p.review.length} rows have End Time before Start Time${$("fill-include-review").checked ? " (included)" : " (not imported)"}.` : ""}</p>
+    <div class="table-scroll"><table><thead><tr><th>Machine</th><th>Entries</th><th></th></tr></thead><tbody>${machines}</tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>Operator (rename to merge)</th><th>Machine</th><th>Shift</th><th></th></tr></thead><tbody>${emps}</tbody></table></div>
+    <div class="table-scroll"><table><thead><tr><th>Die</th><th>Part ID</th><th>Plate</th><th>Machine</th><th>Operator</th><th>Start</th><th>End</th><th>Status</th></tr></thead><tbody>${sample}</tbody></table></div>`;
+  fillImportBtn.disabled = fillBusy || !(p.totals.operations || p.totals.newEmployees);
+}
+
+function rebuildFillPlan() {
+  if (!fillSheets) return;
+  try {
+    fillPlan = buildImportPlan(fillSheets, {
+      includeNonMachines: $("fill-include-nonmachines").checked,
+      includeReview: $("fill-include-review").checked,
+      includeOddTools: $("fill-include-oddtools").checked,
+      nameOverrides: fillOverrides,
+    });
+    showMsg(fillMsg, "");
+  } catch (err) {
+    fillPlan = null;
+    showMsg(fillMsg, errText(err, t("fill.readFailed")));
+  }
+  renderFillPreview();
+}
+
+$("fill-browse-btn").addEventListener("click", () => fillFileInput.click());
+
+fillFileInput.addEventListener("change", async () => {
+  const file = fillFileInput.files[0];
+  if (!file) return;
+  fillFileName.textContent = file.name;
+  showMsg(fillMsg, t("fill.parsing"), true);
+  try {
+    fillSheets = await readWorkbookFile(file);
+    fillOverrides = {};
+    rebuildFillPlan();
+  } catch (err) {
+    fillSheets = null; fillPlan = null; renderFillPreview();
+    showMsg(fillMsg, errText(err, t("fill.readFailed")));
+  } finally {
+    fillFileInput.value = "";
+  }
+});
+
+["fill-include-nonmachines", "fill-include-review", "fill-include-oddtools"].forEach((id) =>
+  $(id).addEventListener("change", rebuildFillPlan));
+
+// Renaming an operator to another operator's name merges them into one person.
+fillPreview.addEventListener("change", (e) => {
+  const input = e.target.closest(".fill-emp-name");
+  if (!input) return;
+  const from = input.dataset.name, to = input.value.trim();
+  if (!to || to === from) { input.value = from; return; }
+  const keys = Object.keys(fillOverrides).filter((k) => fillOverrides[k] === from);
+  (keys.length ? keys : [from]).forEach((k) => { fillOverrides[k] = to; });
+  rebuildFillPlan();
+});
+
+fillImportBtn.addEventListener("click", async () => {
+  if (!fillPlan || fillBusy) return;
+  fillBusy = true; fillImportBtn.disabled = true; fillUndoBtn.disabled = true;
+  try {
+    const out = await runImport(fillPlan, (step) => showMsg(fillMsg, t("fill.importing", { step }), true));
+    showMsg(fillMsg, t("fill.importDone", { ops: out.operations, parts: out.parts, emps: out.employees, machines: out.machines }), true);
+    fillSheets = null; fillPlan = null; fillOverrides = {};
+    fillFileName.textContent = t("fill.noFile");
+    refreshEverything();
+  } catch (err) {
+    showMsg(fillMsg, errText(err, t("fill.importFailed")));
+    try { await loadAll(); refreshEverything(); } catch (_) { /* keep the message above */ }
+  } finally {
+    fillBusy = false;
+    renderFillPreview();
+    refreshFillUndo();
+  }
+});
+
+fillUndoBtn.addEventListener("click", async () => {
+  const info = latestImportInfo();
+  if (!info || fillBusy) return;
+  if (!window.confirm(t("fill.undoConfirm", { batch: info.batch }))) return;
+  fillBusy = true; fillImportBtn.disabled = true; fillUndoBtn.disabled = true;
+  try {
+    await revertImport(info.batch, (step) => showMsg(fillMsg, t("fill.undoing", { step }), true));
+    showMsg(fillMsg, t("fill.undoDone"), true);
+    refreshEverything();
+  } catch (err) {
+    showMsg(fillMsg, errText(err, t("fill.undoFailed")));
+  } finally {
+    fillBusy = false;
+    renderFillPreview();
+    refreshFillUndo();
+  }
+});
+
 async function init() {
   applyStaticTranslations();
   loadPlateNames();

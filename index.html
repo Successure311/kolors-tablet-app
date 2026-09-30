@@ -104,6 +104,26 @@
         <div id="add-die-schedule-mount"></div>
         <div id="add-die-parts-mount"></div>
         <div id="add-die-employee-mount"></div>
+
+        <div class="card" id="fill-card">
+          <h2 data-i18n="fill.heading">Fill Data from Excel / CSV</h2>
+          <p class="hint" data-i18n="fill.hint">Upload the monthly work-log workbook.</p>
+          <div class="actions">
+            <button type="button" id="fill-browse-btn" data-i18n="fill.browseButton">Browse / Upload file</button>
+            <input type="file" id="fill-file-input" accept=".xlsx,.xls,.csv" hidden />
+            <span id="fill-file-name" class="hint" data-i18n="fill.noFile">No file chosen.</span>
+          </div>
+          <label class="check-row"><input type="checkbox" id="fill-include-nonmachines" /> <span data-i18n="fill.includeNonMachines">Also import non-machine rows</span></label>
+          <label class="check-row"><input type="checkbox" id="fill-include-oddtools" /> <span data-i18n="fill.includeOddTools">Also import Tool No. values that are not PT-&lt;number&gt;</span></label>
+          <label class="check-row"><input type="checkbox" id="fill-include-review" /> <span data-i18n="fill.includeReview">Also import rows whose End Time is before Start Time</span></label>
+          <div id="fill-preview"></div>
+          <div class="actions">
+            <button type="button" id="fill-import-btn" disabled data-i18n="fill.importButton">Import</button>
+            <button type="button" id="fill-undo-btn" class="danger" disabled data-i18n="fill.undoButton">Undo last import</button>
+          </div>
+          <p id="fill-undo-info" class="hint"></p>
+          <p id="fill-msg" class="msg"></p>
+        </div>
       </div>
 
       <!-- ----- Edit Existing Die: pick a die, then everything about it ----- -->

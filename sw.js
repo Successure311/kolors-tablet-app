@@ -13,7 +13,7 @@
  * touched, so data is always live either way.
  */
 
-const CACHE = "kolors-app-v14";
+const CACHE = "kolors-app-v15";
 const ASSETS = [
   "index.html",
   "style.css",

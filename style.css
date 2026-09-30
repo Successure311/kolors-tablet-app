@@ -472,3 +472,7 @@ table.grid-table tr.section-row td {
   #die-info-box { position: static; width: 100%; max-width: none; margin-bottom: 12px; }
 }
 
+
+.check-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.check-row input { width: auto; }
+#fill-preview input.fill-emp-name { min-width: 120px; }
