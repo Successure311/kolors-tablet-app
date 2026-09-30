@@ -639,7 +639,7 @@ const reloadScheduleActivities = async () => {
 // then on — independent of whether any entry currently references it.
 
 function allKnownStages() {
-  return FIXED_MACHINES.slice();
+  return FIXED_MACHINES.slice().sort((x, y) => x.localeCompare(y));
 }
 
 // Adds it to the local list immediately (so it's a real tile right away)
@@ -652,10 +652,16 @@ function rememberCustomStage() {}
 
 const createdKey = (row) => `${row.CreatedDate || ""} ${row.CreatedTime || ""}`;
 
+// Die number order, small to large (PT-73, PT-84, PT-130, PT-258…); ids
+// without a number go last, alphabetically.
+function toolNumber(t) {
+  const m = /(\d+)/.exec(String(t.ToolId));
+  return m ? Number(m[1]) : Infinity;
+}
 function listTools() {
   return store.tools
     .slice()
-    .sort((a, b) => createdKey(b).localeCompare(createdKey(a)));
+    .sort((a, b) => toolNumber(a) - toolNumber(b) || String(a.ToolId).localeCompare(String(b.ToolId), undefined, { numeric: true }));
 }
 
 // Parts carry the die's readable name (Tools.Description) in a DieName column,

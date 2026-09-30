@@ -423,7 +423,7 @@ let customPlateNames = []; // queued "Other" plate names, not yet created
 let freshPartIds = new Set(); // just-created via "Add Selected Plates", not yet Saved — render blank
 
 function loadPlateNames() {
-  plateCheckboxGrid.innerHTML = PLATE_NAMES.map((n) =>
+  plateCheckboxGrid.innerHTML = PLATE_NAMES.slice().sort((x, y) => x.localeCompare(y)).map((n) =>
     `<label><input type="checkbox" value="${esc(n)}" /> ${esc(n)}</label>`
   ).join("");
 }
@@ -1148,7 +1148,7 @@ const OUTSOURCE_STAGE = "OutSource";
 // Machine Rates sheet / the Fill Data import) — not the old generic departments.
 const ENTRY_MACHINES = FIXED_MACHINES;
 function stagesForDeptGrid() {
-  return ENTRY_MACHINES.concat([OUTSOURCE_STAGE]);
+  return ENTRY_MACHINES.slice().sort((x, y) => x.localeCompare(y)).concat([OUTSOURCE_STAGE]);
 }
 
 $("dept-other-continue-btn").addEventListener("click", () => {
@@ -1160,7 +1160,7 @@ deptOtherInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("dept-other-continue-btn").click();
 });
 
-$("plate-name-options").innerHTML = PLATE_NAMES.map((n) => `<option value="${esc(n)}"></option>`).join("");
+$("plate-name-options").innerHTML = PLATE_NAMES.slice().sort((x, y) => x.localeCompare(y)).map((n) => `<option value="${esc(n)}"></option>`).join("");
 
 // "Other…" on the die step: a die that isn't in the list yet, typed as ID +
 // plate name, created when Next is pressed (see commitOtherDie()).
@@ -1194,12 +1194,14 @@ function renderDieGrid() {
     !q || importKey(x.ToolId).includes(q) || importKey(x.Description).includes(q));
   const grid = $("die-grid");
   $("die-other-wrap").hidden = !dieOtherMode;
-  grid.innerHTML = tools.map((t) => `<div class="kpi-card" data-tool="${esc(t.ToolId)}">${esc(t.ToolId)}<small>${esc(t.Description)}</small></div>`).join("") +
+  grid.innerHTML = tools.map((t) => `<div class="kpi-card" data-tool="${esc(t.ToolId)}">${esc(t.ToolId)}${t.Description && importKey(t.Description) !== importKey(t.ToolId) ? `<small>${esc(t.Description)}</small>` : ""}</div>`).join("") +
     `<div class="kpi-card other-tile ${dieOtherMode ? "selected" : ""}" data-tool="${OTHER_STAGE_VALUE}">${t("common.other")}</div>`;
   grid.querySelectorAll(".kpi-card").forEach((card) => card.addEventListener("click", () => {
     if (card.dataset.tool === OTHER_STAGE_VALUE) {
       dieOtherMode = true;
       wizState.toolId = null;
+      // Whatever was typed in the search box (e.g. 272) carries over as the Die ID.
+      if (!$("die-other-id").value) $("die-other-id").value = $("die-search").value.trim();
       renderDieGrid();
       renderWizStep();
       $("die-other-id").focus();
@@ -1350,16 +1352,21 @@ function renderPartEmployeeStep() {
   const have = new Set(parts.map((p) => importKey(p.name)));
   const suggestions = (TOOL_PLATES[String(wizState.toolId).toUpperCase()] || []).filter((n) => !have.has(importKey(n)) && (!pq || importKey(n).includes(pq)));
   $("part-other-wrap").hidden = !partOtherMode;
-  partGrid.innerHTML = shown.map((p) => {
-    const { label, cls, clickable } = partCardForStage(p, wizState.stage);
-    const selected = p.part_id === wizState.partId ? "selected" : "";
-    return `<div class="kpi-card ${cls} ${clickable ? "" : "disabled"} ${selected}" data-part="${esc(p.part_id)}" data-clickable="${clickable}">
-      ${esc(p.name)}<small>${esc(p.part_id)}</small><small>${esc(label)}</small>
-    </div>`;
-  }).join("") + suggestions.map((n) => {
-    const id = NEW_PART_PREFIX + n;
+  // Existing plates and not-yet-created names in ONE list, sorted A-Z by plate name.
+  const tiles = shown.map((p) => ({ name: p.name, part: p }))
+    .concat(suggestions.map((n) => ({ name: n, part: null })))
+    .sort((x, y) => String(x.name).localeCompare(String(y.name), undefined, { numeric: true }));
+  partGrid.innerHTML = tiles.map(({ name, part: p }) => {
+    if (p) {
+      const { label, cls, clickable } = partCardForStage(p, wizState.stage);
+      const selected = p.part_id === wizState.partId ? "selected" : "";
+      return `<div class="kpi-card ${cls} ${clickable ? "" : "disabled"} ${selected}" data-part="${esc(p.part_id)}" data-clickable="${clickable}">
+        ${esc(p.name)}<small>${esc(p.part_id)}</small><small>${esc(label)}</small>
+      </div>`;
+    }
+    const id = NEW_PART_PREFIX + name;
     return `<div class="kpi-card pending ${id === wizState.partId ? "selected" : ""}" data-part="${esc(id)}" data-clickable="true">
-      ${esc(n)}<small>${t("wizard.newPlate")}</small><small>${t("wizard.pending")}</small>
+      ${esc(name)}<small>${t("wizard.newPlate")}</small><small>${t("wizard.pending")}</small>
     </div>`;
   }).join("") +
     `<div class="kpi-card other-tile ${partOtherMode ? "selected" : ""}" data-part="${OTHER_STAGE_VALUE}" data-clickable="true">${t("common.other")}</div>`;
