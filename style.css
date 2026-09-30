@@ -295,7 +295,7 @@ th { color: #666; font-size: 12px; text-transform: uppercase; }
 .kpi-card.disabled:active { transform: none; }
 .kpi-card.selected { border-color: #fca311; border-width: 3px; background: #fff7ea; }
 .kpi-card.other-tile { border-style: dashed; color: #666; }
-#die-search { width: 100%; max-width: 420px; margin: 4px 0 14px; }
+#die-search, #part-search { width: 100%; max-width: 420px; margin: 4px 0 14px; }
 
 .part-employee-columns { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
 .part-employee-columns .part-column { flex: 3 1 440px; min-width: 0; }

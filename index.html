@@ -392,7 +392,15 @@
             <div class="part-employee-columns">
               <div class="column part-column">
                 <h3 data-i18n="wizard.partHeading">Part</h3>
+                <input id="part-search" type="search" data-i18n-placeholder="wizard.partSearchPlaceholder" placeholder="Search plate name" autocomplete="off" />
                 <div id="part-grid" class="kpi-grid"></div>
+                <div id="part-other-wrap" class="other-input-row" hidden>
+                  <label><span data-i18n="wizard.otherPlateLabel">Plate Name</span>
+                    <input id="part-other-name" list="plate-name-options" data-i18n-placeholder="wizard.otherPlatePlaceholder" placeholder="e.g. Middle Plate" autocomplete="off" />
+                  </label>
+                  <button type="button" id="part-other-add-btn" data-i18n="wizard.addPlateButton">Add</button>
+                </div>
+                <p id="part-other-msg" class="msg"></p>
               </div>
               <div class="column employee-column">
                 <h3 data-i18n="wizard.employeeHeading">Employee</h3>

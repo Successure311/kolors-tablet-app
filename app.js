@@ -1017,6 +1017,7 @@ let wizState = { stage: null, toolId: null, partId: null, employee: null };
 function wizResetToHome() {
   wizIndex = 0;
   wizState = { stage: null, toolId: null, partId: null, employee: null };
+  resetPartSearch();
   showMsg(ssMsg, "");
   $("wiz-step-outsource").hidden = true;
   $("wiz-prev-btn").hidden = false;
@@ -1084,6 +1085,7 @@ $("wiz-next-btn").addEventListener("click", () => {
     try { commitOtherDie(); } catch (err) { showMsg($("die-other-msg"), errText(err, "")); return; }
     showMsg($("die-other-msg"), "");
   }
+  if (wizIndex === 1) resetPartSearch();
   wizIndex++;
   if (wizIndex === 1) renderDieGrid();
   if (wizIndex === 2) renderPartEmployeeStep();
@@ -1195,6 +1197,7 @@ function renderDieGrid() {
       return;
     }
     dieOtherMode = false;
+    resetPartSearch();
     wizState.toolId = card.dataset.tool;
     wizState.partId = null;
     wizState.employee = null;
@@ -1222,6 +1225,37 @@ function partCardForStage(p, stage) {
   if (workingElsewhere) return { label: t("wizard.workingElsewhere"), cls: "working", clickable: false };
   return { label: t("wizard.pending"), cls: "pending", clickable: true };
 }
+
+// Plate step: search among this die's plates, and "Other…" for a plate that
+// isn't there yet — only the plate name is typed, the Part ID is generated.
+let partOtherMode = false;
+
+function resetPartSearch() {
+  partOtherMode = false;
+  $("part-search").value = "";
+  $("part-other-name").value = "";
+  showMsg($("part-other-msg"), "");
+}
+
+function addOtherPlate() {
+  const plate = importClean($("part-other-name").value).toUpperCase();
+  if (!plate) { showMsg($("part-other-msg"), t("wizard.otherPlateNeeded")); return; }
+  const existing = store.parts.find((p) => String(p.ToolId) === String(wizState.toolId) && importKey(p.Name) === importKey(plate));
+  const part = existing || addPartsBulk(wizState.toolId, [plate])[0];
+  partOtherMode = false;
+  $("part-other-name").value = "";
+  $("part-search").value = "";
+  showMsg($("part-other-msg"), "");
+  // Same plate typed again: just pick it (if it can be started here) instead of duplicating it.
+  wizState.partId = part.PartId;
+  const info = partsWithStatus(wizState.toolId).find((p) => p.part_id === part.PartId);
+  if (info && !partCardForStage(info, wizState.stage).clickable) wizState.partId = null;
+  renderPartEmployeeStep();
+}
+
+$("part-search").addEventListener("input", () => renderPartEmployeeStep());
+$("part-other-add-btn").addEventListener("click", addOtherPlate);
+$("part-other-name").addEventListener("keydown", (e) => { if (e.key === "Enter") addOtherPlate(); });
 
 // Operators who work on each machine, from the workshop's Machine / Shift /
 // Operator list (spelling variants already merged). One operator can appear on
@@ -1261,23 +1295,30 @@ function renderPartEmployeeStep() {
 
   const parts = partsWithStatus(wizState.toolId);
   const partGrid = $("part-grid");
-
-  if (!parts.length) {
-    partGrid.innerHTML = `<p>${t("wizard.noParts")}</p>`;
-  } else {
-    partGrid.innerHTML = parts.map((p) => {
-      const { label, cls, clickable } = partCardForStage(p, wizState.stage);
-      const selected = p.part_id === wizState.partId ? "selected" : "";
-      return `<div class="kpi-card ${cls} ${clickable ? "" : "disabled"} ${selected}" data-part="${esc(p.part_id)}" data-clickable="${clickable}">
-        ${esc(p.name)}<small>${esc(p.part_id)}</small><small>${esc(label)}</small>
-      </div>`;
-    }).join("");
-    partGrid.querySelectorAll('.kpi-card[data-clickable="true"]').forEach((card) =>
-      card.addEventListener("click", () => {
-        wizState.partId = card.dataset.part;
+  const pq = importKey($("part-search").value);
+  const shown = parts.filter((p) => !pq || importKey(p.name).includes(pq) || importKey(p.part_id).includes(pq));
+  $("part-other-wrap").hidden = !partOtherMode;
+  partGrid.innerHTML = shown.map((p) => {
+    const { label, cls, clickable } = partCardForStage(p, wizState.stage);
+    const selected = p.part_id === wizState.partId ? "selected" : "";
+    return `<div class="kpi-card ${cls} ${clickable ? "" : "disabled"} ${selected}" data-part="${esc(p.part_id)}" data-clickable="${clickable}">
+      ${esc(p.name)}<small>${esc(p.part_id)}</small><small>${esc(label)}</small>
+    </div>`;
+  }).join("") +
+    `<div class="kpi-card other-tile ${partOtherMode ? "selected" : ""}" data-part="${OTHER_STAGE_VALUE}" data-clickable="true">${t("common.other")}</div>`;
+  partGrid.querySelectorAll('.kpi-card[data-clickable="true"]').forEach((card) =>
+    card.addEventListener("click", () => {
+      if (card.dataset.part === OTHER_STAGE_VALUE) {
+        partOtherMode = true;
+        wizState.partId = null;
         renderPartEmployeeStep();
-      }));
-  }
+        $("part-other-name").focus();
+        return;
+      }
+      partOtherMode = false;
+      wizState.partId = card.dataset.part;
+      renderPartEmployeeStep();
+    }));
 
   // Only the employees fixed to this machine — each worker is assigned one
   // machine under "New Die / Add Parts", so that's who can be picked here.
