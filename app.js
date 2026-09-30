@@ -1079,6 +1079,12 @@ $("wiz-prev-btn").addEventListener("click", () => {
   renderWizStep();
 }));
 
+// Add under the "Other…" die fields: same as Next (creates the die + plate, then shows the plate step).
+$("die-other-add-btn").addEventListener("click", () => {
+  if (!wizCanGoNext()) { showMsg($("die-other-msg"), t("wizard.otherDieNeedBoth")); return; }
+  $("wiz-next-btn").click();
+});
+
 $("wiz-next-btn").addEventListener("click", () => {
   if (!wizCanGoNext()) return;
   if (wizIndex === 1 && dieOtherMode) {
