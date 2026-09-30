@@ -1313,6 +1313,30 @@ function operatorsForStage(stage) {
   return Object.values(byName).sort((a, b) => String(a.Name).localeCompare(String(b.Name)));
 }
 
+// Writes every operator in MACHINE_OPERATORS that isn't an Employee yet into
+// the Employees sheet (one row each, spelling/case variants counted as the
+// same person; Machine = the first machine they're listed on, Shift = A if
+// they work A there). Existing employees are never changed.
+async function addAllOperatorsToEmployees() {
+  if (!(await drainOutbox(60000))) throw new Error("Earlier changes are still waiting to sync — try again in a moment.");
+  const have = new Set(store.employees.map((e) => operatorKey(e.Name)));
+  const rows = [];
+  Object.keys(MACHINE_OPERATORS).forEach((machine) => {
+    MACHINE_OPERATORS[machine].forEach(([name]) => {
+      const k = operatorKey(name);
+      if (have.has(k)) return;
+      have.add(k);
+      const shift = MACHINE_OPERATORS[machine].some(([n, s]) => n === name && s === "A") ? "A" : "B";
+      rows.push({ Name: name, Shift: shift, Machine: machine, ...createdNow() });
+    });
+  });
+  if (!rows.length) return 0;
+  await importPost(batchPayload(rows.map((r) => ({ sheet: "Employees", row: r, key_column: "Name" }))));
+  rows.forEach((r) => store.employees.push(r));
+  saveCacheToLocalStorage();
+  return rows.length;
+}
+
 function renderPartEmployeeStep() {
   $("wiz-die-label").textContent = wizState.toolId || "";
   $("wiz-dept-label-2").textContent = wizState.stage ? machineLabel(wizState.stage) : "";
@@ -2162,6 +2186,21 @@ fillImportBtn.addEventListener("click", async () => {
     fillBusy = false;
     renderFillPreview();
     refreshFillUndo();
+  }
+});
+
+$("fill-sync-employees-btn").addEventListener("click", async () => {
+  if (fillBusy) return;
+  fillBusy = true;
+  showMsg(fillMsg, t("common.saving"), true);
+  try {
+    const n = await addAllOperatorsToEmployees();
+    showMsg(fillMsg, n ? t("fill.operatorsAdded", { count: n }) : t("fill.operatorsAlready"), true);
+    refreshEverything();
+  } catch (err) {
+    showMsg(fillMsg, errText(err, t("fill.importFailed")));
+  } finally {
+    fillBusy = false;
   }
 });
 
