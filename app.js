@@ -43,6 +43,7 @@ function employeeLabel(name) {
 // ---------- tabs ----------
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
+    justDoneIds.clear();
     document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
     document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");
@@ -78,6 +79,7 @@ function resetEntrySubTabs() {
 
 document.querySelectorAll(".sub-tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
+    justDoneIds.clear();
     document.querySelectorAll(".sub-tab-btn").forEach((b) => b.classList.remove("active"));
     document.querySelectorAll(".sub-tab-panel").forEach((p) => { p.classList.remove("active"); p.hidden = true; });
     btn.classList.add("active");
@@ -1015,6 +1017,7 @@ let wizIndex = 0;
 let wizState = { stage: null, toolId: null, partId: null, employee: null };
 
 function wizResetToHome() {
+  justDoneIds.clear();
   wizIndex = 0;
   wizState = { stage: null, toolId: null, partId: null, employee: null };
   resetPartSearch();
@@ -1410,6 +1413,7 @@ let wpFilter = { stage: null, employee: null };
 let wpEmpNames = [];
 
 function wpGoHome() {
+  justDoneIds.clear();
   wpStep = 0;
   wpFilter = { stage: null, employee: null };
   $("wp-results-card").hidden = true;
@@ -1553,10 +1557,17 @@ function renderOpsRows(tbody, ops, emptyMessage, showActions = true) {
 const openTableBodyAdd = document.querySelector("#open-table-add tbody");
 const openTableBody = document.querySelector("#open-table tbody");
 
-function refreshOpenOps() {
-  const ops = listOperations();
+// A Done entry is shown only right after the operator answers Y — until they
+// leave this view (another tab, sub-tab or Home). After that the Entries
+// tables list only entries that are still open (Setup / Working / Waiting…).
+const justDoneIds = new Set();
 
-  renderOpsRows(openTableBodyAdd, ops, t("entries.none"), false);
+function refreshOpenOps() {
+  const ops = listOperations().filter((o) => o.Status !== "Done" || justDoneIds.has(o.Id));
+
+  // Add Entry's table never lists Done entries — only Work Progress shows one,
+  // and only right after Y.
+  renderOpsRows(openTableBodyAdd, ops.filter((o) => o.Status !== "Done"), t("entries.none"), false);
 
   if (wpFilter.stage && wpFilter.employee) {
     const filtered = ops.filter((o) => o.Department === wpFilter.stage && o.Operator === wpFilter.employee);
@@ -1734,6 +1745,7 @@ $("reset-entries-btn-add").addEventListener("click", () => resetAllEntries(reset
 async function stopEntry(opId, completed) {
   try {
     const op = await stopOperation(opId, completed);
+    if (completed) justDoneIds.add(op.Id);
     showMsg(wpMsg, completed ? t("entries.doneMsg", { part: op.PartId }) : t("entries.waitingMsg", { part: op.PartId }), true);
     refreshOpenOps();
     refreshWizPartStepIfActive();
