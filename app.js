@@ -250,6 +250,7 @@ async function enterNewToolAddMode() {
   partToolSelect.value = "";
   dieInfoBox.hidden = true;
   refreshFillUndo();
+  seedOperatorsIfNeeded().then(refreshEmployeeTable);
 }
 
 // Edit Existing Die: nothing but the Select Die dropdown shows until a die
@@ -288,6 +289,7 @@ async function enterNewToolEditMode() {
   dieInfoBox.hidden = true;
   syncEditDieVisibility();
   refreshDieStatusTable();
+  seedOperatorsIfNeeded().then(refreshEmployeeTable);
 }
 
 document.querySelectorAll(".newtool-mode-btn").forEach((btn) => {
@@ -923,32 +925,27 @@ employeeMachineSelect.addEventListener("change", () => {
 const employeeSubmitBtn = $("employee-submit-btn");
 const employeeCancelEditBtn = $("employee-cancel-edit-btn");
 
-// Machine-wise, shift-wise operators from the workshop's list (MACHINE_OPERATORS,
-// same as the Entry tab), then any employee that isn't on that list (these keep
-// Edit / Delete). Sorted by machine, then shift, then name.
+// Every Employees row (operator + machine + shift), sorted by machine, then
+// shift, then name — each with Edit / Delete.
 function refreshEmployeeTable() {
-  const rows = [];
-  Object.keys(MACHINE_OPERATORS).forEach((m) =>
-    MACHINE_OPERATORS[m].forEach(([n, s]) => rows.push({ Name: n, Machine: m, Shift: s, listed: true })));
-  const listedKeys = new Set(rows.map((r) => operatorKey(r.Name)));
-  listEmployees().filter((e) => !listedKeys.has(operatorKey(e.Name)))
-    .forEach((e) => rows.push({ Name: e.Name, Machine: e.Machine || "", Shift: e.Shift || "", listed: false }));
-  rows.sort((x, y) => String(x.Machine).localeCompare(String(y.Machine)) ||
-    String(x.Shift).localeCompare(String(y.Shift)) || String(x.Name).localeCompare(String(y.Name)));
+  const rows = store.employees.slice().sort((x, y) =>
+    String(x.Machine || "").localeCompare(String(y.Machine || "")) ||
+    String(x.Shift || "").localeCompare(String(y.Shift || "")) ||
+    String(x.Name || "").localeCompare(String(y.Name || "")));
   employeeTableBody.innerHTML = rows.map((e) => `
     <tr>
       <td>${esc(employeeLabel(e.Name))}</td>
-      <td>${esc(machineLabel(e.Machine))}</td>
+      <td>${esc(machineLabel(e.Machine || ""))}</td>
       <td>${esc(e.Shift)}</td>
-      <td class="row-actions">${e.listed ? "" : `
-        <button type="button" class="edit-employee-btn" data-name="${esc(e.Name)}">${t("employees.edit")}</button>
-        <button type="button" class="delete-employee-btn" data-name="${esc(e.Name)}">${t("employees.delete")}</button>`}
+      <td class="row-actions">
+        <button type="button" class="edit-employee-btn" data-key="${esc(empKey(e))}">${t("employees.edit")}</button>
+        <button type="button" class="delete-employee-btn" data-key="${esc(empKey(e))}">${t("employees.delete")}</button>
       </td>
     </tr>`).join("") || `<tr><td colspan="4">${t("employees.none")}</td></tr>`;
   employeeTableBody.querySelectorAll(".edit-employee-btn").forEach((btn) =>
-    btn.addEventListener("click", () => enterEmployeeEditMode(findEmployee(btn.dataset.name))));
+    btn.addEventListener("click", () => enterEmployeeEditMode(findEmployeeByKey(btn.dataset.key))));
   employeeTableBody.querySelectorAll(".delete-employee-btn").forEach((btn) =>
-    btn.addEventListener("click", () => removeEmployee(btn.dataset.name)));
+    btn.addEventListener("click", () => removeEmployee(btn.dataset.key)));
 }
 
 function enterEmployeeEditMode(emp) {
@@ -956,7 +953,7 @@ function enterEmployeeEditMode(emp) {
   editDieEmployeeFormMount.appendChild(employeeFormCard);
   employeeFormCard.hidden = false;
   loadEmployeeMachineOptions();
-  employeeForm.editing_name.value = emp.Name;
+  employeeForm.editing_name.value = empKey(emp);
   $("employee-name-input").value = emp.Name;
   $("employee-name-input").disabled = true;
   employeeForm.shift.value = emp.Shift || "";
@@ -981,14 +978,16 @@ function exitEmployeeEditMode() {
 }
 employeeCancelEditBtn.addEventListener("click", exitEmployeeEditMode);
 
-async function removeEmployee(name) {
+async function removeEmployee(key) {
+  const target = findEmployeeByKey(key);
+  const name = target ? target.Name : key;
   if (!confirm(t("employees.deleteConfirm", { name }))) return;
   // Instant — deleteEmployee() updates the screen right away and syncs to
   // the Google Sheet in the background.
   try {
-    await deleteEmployee(name);
+    await deleteEmployee(key);
     showMsg(employeeTableMsg, t("employees.deleted", { name }), true);
-    if (employeeForm.editing_name.value === name) exitEmployeeEditMode();
+    if (employeeForm.editing_name.value === key) exitEmployeeEditMode();
     refreshEmployeeTable();
   } catch (err) {
     showMsg(employeeTableMsg, errText(err, t("employees.deleteFailed")));
@@ -1306,7 +1305,7 @@ const operatorKey = (name) => importKey(importOperatorName(name) || name);
 // operators, one entry per name AND shift (the same person can work A or B).
 function operatorsForStage(stage) {
   const list = employeesForStage(stage).map((e) => ({ Name: e.Name, Shift: e.Shift || "A" }));
-  (MACHINE_OPERATORS[stage] || []).forEach(([name, shift]) => {
+  (store.employees.some((e) => e.Key) ? [] : (MACHINE_OPERATORS[stage] || [])).forEach(([name, shift]) => {
     const existing = store.employees.find((e) => operatorKey(e.Name) === operatorKey(name));
     const use = existing ? existing.Name : name;
     if (!list.some((x) => operatorKey(x.Name) === operatorKey(use) && x.Shift === shift)) list.push({ Name: use, Shift: shift });
@@ -1325,28 +1324,43 @@ function operatorsForStage(stage) {
   return Object.values(byName).sort((a, b) => String(a.Name).localeCompare(String(b.Name)));
 }
 
-// Writes every operator in MACHINE_OPERATORS that isn't an Employee yet into
-// the Employees sheet (one row each, spelling/case variants counted as the
-// same person; Machine = the first machine they're listed on, Shift = A if
-// they work A there). Existing employees are never changed.
-async function addAllOperatorsToEmployees() {
-  if (!(await drainOutbox(60000))) throw new Error("Earlier changes are still waiting to sync — try again in a moment.");
-  const have = new Set(store.employees.map((e) => operatorKey(e.Name)));
-  const rows = [];
-  Object.keys(MACHINE_OPERATORS).forEach((machine) => {
-    MACHINE_OPERATORS[machine].forEach(([name]) => {
-      const k = operatorKey(name);
-      if (have.has(k)) return;
-      have.add(k);
-      const shift = MACHINE_OPERATORS[machine].some(([n, s]) => n === name && s === "A") ? "A" : "B";
-      rows.push({ Name: name, Shift: shift, Machine: machine, ...createdNow() });
+// First visit to the admin screens: turns the Employees sheet into one row per
+// operator + machine + shift from the workshop's list (MACHINE_OPERATORS),
+// keeping every older row (re-written with a Key). Only runs while some row
+// still has no Key, so a row deleted afterwards is never re-added.
+let seedingOperators = false;
+async function seedOperatorsIfNeeded() {
+  if (seedingOperators) return;
+  const legacy = store.employees.filter((e) => !e.Key);
+  if (store.employees.length && !legacy.length) return;
+  seedingOperators = true;
+  try {
+    if (!(await drainOutbox(60000))) return;
+    const rows = new Map();
+    legacy.forEach((e) => {
+      const r = { Name: e.Name, Shift: e.Shift || "A", Machine: e.Machine || "", ...keepCreated(e) };
+      r.Key = empKey(r);
+      rows.set(r.Key, r);
     });
-  });
-  if (!rows.length) return 0;
-  await importPost(batchPayload(rows.map((r) => ({ sheet: "Employees", row: r, key_column: "Name" }))));
-  rows.forEach((r) => store.employees.push(r));
-  saveCacheToLocalStorage();
-  return rows.length;
+    Object.keys(MACHINE_OPERATORS).forEach((machine) => {
+      MACHINE_OPERATORS[machine].forEach(([name, shift]) => {
+        const same = store.employees.find((e) => operatorKey(e.Name) === operatorKey(name));
+        const r = { Name: same ? same.Name : name, Shift: shift, Machine: machine, ...createdNow() };
+        r.Key = empKey(r);
+        if (!rows.has(r.Key)) rows.set(r.Key, r);
+      });
+    });
+    for (const n of new Set(legacy.map((e) => e.Name))) {
+      await importPost(deletePayload("Employees", "Name", n));
+    }
+    await importChunks(Array.from(rows.values()).map((r) => ({ sheet: "Employees", row: r, key_column: "Key" })), 150);
+    store.employees = Array.from(rows.values());
+    saveCacheToLocalStorage();
+  } catch (err) {
+    console.warn("[operators seed]", err);
+  } finally {
+    seedingOperators = false;
+  }
 }
 
 function renderPartEmployeeStep() {
@@ -2204,34 +2218,6 @@ fillImportBtn.addEventListener("click", async () => {
     renderFillPreview();
     refreshFillUndo();
   }
-});
-
-$("fill-sync-employees-btn").addEventListener("click", async () => {
-  if (fillBusy) return;
-  fillBusy = true;
-  showMsg(fillMsg, t("common.saving"), true);
-  try {
-    const n = await addAllOperatorsToEmployees();
-    showMsg(fillMsg, n ? t("fill.operatorsAdded", { count: n }) : t("fill.operatorsAlready"), true);
-    refreshEverything();
-  } catch (err) {
-    showMsg(fillMsg, errText(err, t("fill.importFailed")));
-  } finally {
-    fillBusy = false;
-  }
-});
-
-// Deletes every Employees-sheet row that isn't on the workshop's operator list.
-$("fill-remove-others-btn").addEventListener("click", () => {
-  if (fillBusy) return;
-  const listedKeys = new Set();
-  Object.keys(MACHINE_OPERATORS).forEach((m) => MACHINE_OPERATORS[m].forEach(([n]) => listedKeys.add(operatorKey(n))));
-  const others = store.employees.filter((e) => !listedKeys.has(operatorKey(e.Name)));
-  if (!others.length) { showMsg(fillMsg, t("fill.noOtherEmployees"), true); return; }
-  if (!window.confirm(t("fill.removeOthersConfirm", { count: others.length, names: others.map((e) => e.Name).join(", ") }))) return;
-  others.forEach((e) => deleteEmployee(e.Name));
-  refreshEverything();
-  showMsg(fillMsg, t("fill.othersRemoved", { count: others.length }), true);
 });
 
 fillUndoBtn.addEventListener("click", async () => {

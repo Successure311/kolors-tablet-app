@@ -1493,6 +1493,12 @@ function updatePartStatus(partId, { designReady, codeReady }) {
 }
 
 // ---------- employees ----------
+// One row per person + machine + shift (Key = "Name|Machine|Shift"), so the
+// same operator can be listed on several machines and on both shifts, each row
+// with its own Edit / Delete. A row without a Key (older data) is treated as
+// Name|Machine|Shift too and gets one the first time it is rewritten.
+
+const empKey = (e) => (e.Key ? String(e.Key) : `${e.Name}|${e.Machine || ""}|${e.Shift || ""}`);
 
 function listEmployees() {
   return store.employees
@@ -1500,32 +1506,50 @@ function listEmployees() {
     .sort((a, b) => String(a.Name || "").localeCompare(String(b.Name || "")));
 }
 
+// Any row of this person (first match) — used to check an operator exists.
 const findEmployee = (name) =>
   store.employees.find((e) => String(e.Name) === String(name)) || null;
 
-// Employees with a fixed Machine matching this department — only these show
-// up to pick from when starting/stopping work at that department, mirroring
-// "there is fix workers in each department" from the dashboard.
+const findEmployeeByKey = (key) =>
+  store.employees.find((e) => empKey(e) === String(key)) || null;
+
+// Rows whose Machine matches this department — only these show up to pick
+// from when starting/stopping work at that department.
 const employeesForStage = (stage) =>
   listEmployees().filter((e) => String(e.Machine || "") === String(stage || ""));
+
+// The payload that removes exactly this row (older rows have no Key column value).
+const employeeDeletePayload = (e) =>
+  e.Key ? deletePayload("Employees", "Key", e.Key) : deletePayload("Employees", "Name", e.Name);
 
 // Instant, same as updateEmployee()/deleteEmployee(): the new employee shows
 // up in the list right away and the sheet write happens in the background,
 // undone if it ultimately fails.
+// One spelling per person: capitals, extra spaces and known misspellings
+// (PARTH / parth, Labhans / Lavhans…) all resolve to the name already used,
+// or else to the cleaned-up form — so the same person is never added twice.
+function canonicalEmployeeName(raw) {
+  const key = (x) => importKey(importOperatorName(x) || x);
+  const k = key(raw);
+  const existing = k && store.employees.find((e) => key(e.Name) === k);
+  return existing ? existing.Name : (importOperatorName(raw) || importClean(raw));
+}
+
 function createEmployee(name, shift, machine) {
-  const n = (name || "").trim();
+  const n = canonicalEmployeeName(name);
   if (!n) throw new Error("Name is required");
   if (!SHIFTS.includes(shift)) throw new Error("Unknown shift");
   const m = (machine || "").trim();
   if (!m) throw new Error("Machine is required");
-  if (findEmployee(n)) throw new Error(`Employee ${n} already exists`);
+  const key = `${n}|${m}|${shift}`;
+  if (findEmployeeByKey(key)) throw new Error(`${n} is already listed on ${m}, shift ${shift}`);
   rememberCustomStage(m);
-  const row = { Name: n, Shift: shift, Machine: m, ...createdNow() };
+  const row = { Key: key, Name: n, Shift: shift, Machine: m, ...createdNow() };
 
   store.employees.push(row);
   saveCacheToLocalStorage();
 
-  queueWrite(upsertPayload("Employees", { ...row }, "Name"), {
+  queueWrite(upsertPayload("Employees", { ...row }, "Key"), {
     failMsg: `Could not save new employee ${n} to the Google Sheet — undone.`,
     rollback: () => {
       store.employees = store.employees.filter((e) => e !== row);
@@ -1537,42 +1561,55 @@ function createEmployee(name, shift, machine) {
 }
 
 // Instant, same as updateTool()/updatePartStatus(): the screen updates right
-// away and the sheet write happens in the background.
-function updateEmployee(name, { shift, machine }) {
-  const emp = findEmployee(name);
+// away and the sheet write happens in the background. Changing machine or
+// shift changes the row's Key, so the old row is deleted and the new one written.
+function updateEmployee(key, { shift, machine }) {
+  const emp = findEmployeeByKey(key);
   if (!emp) throw new Error("Employee not found");
   const m = (machine || "").trim();
   if (!m) throw new Error("Machine is required");
+  const newShift = shift || emp.Shift;
+  const newKey = `${emp.Name}|${m}|${newShift}`;
+  if (newKey !== empKey(emp) && findEmployeeByKey(newKey)) {
+    throw new Error(`${emp.Name} is already listed on ${m}, shift ${newShift}`);
+  }
   rememberCustomStage(m);
 
   const before = { ...emp };
-  emp.Shift = shift || emp.Shift;
+  const oldPayload = employeeDeletePayload(before);
+  emp.Shift = newShift;
   emp.Machine = m;
+  emp.Key = newKey;
   saveCacheToLocalStorage();
 
   const row = { ...emp, ...keepCreated(emp) };
-  queueWrite(upsertPayload("Employees", row, "Name"), {
-    failMsg: `Could not save changes to employee ${name} to the Google Sheet — undone.`,
+  const group = `emp:${newKey}`;
+  const opts = {
+    failMsg: `Could not save changes to employee ${emp.Name} to the Google Sheet — undone.`,
+    group,
     rollback: () => {
       Object.assign(emp, before);
       saveCacheToLocalStorage();
     },
-  });
+  };
+  if (newKey !== before.Key) queueWrite(oldPayload, opts);
+  queueWrite(upsertPayload("Employees", row, "Key"), opts);
 
   return row;
 }
 
 // Removed from the screen immediately; the sheet delete happens in the
 // background, same pattern as Start/Stop/Restart above.
-function deleteEmployee(name) {
-  const snapshot = store.employees.filter((e) => String(e.Name) === String(name));
-  store.employees = store.employees.filter((e) => String(e.Name) !== String(name));
+function deleteEmployee(key) {
+  const emp = findEmployeeByKey(key);
+  if (!emp) return;
+  store.employees = store.employees.filter((e) => e !== emp);
   saveCacheToLocalStorage();
 
-  queueWrite(deletePayload("Employees", "Name", name), {
-    failMsg: `Could not delete employee ${name} from the Google Sheet — undone.`,
+  queueWrite(employeeDeletePayload(emp), {
+    failMsg: `Could not delete employee ${emp.Name} from the Google Sheet — undone.`,
     rollback: () => {
-      store.employees = store.employees.concat(snapshot);
+      store.employees = store.employees.concat([emp]);
       saveCacheToLocalStorage();
     },
   });
