@@ -1277,16 +1277,30 @@ const MACHINE_OPERATORS = {
   "Wirecutting Machine": [["Ravikant", "A"], ["Mahender", "A"], ["Sukindar", "A"], ["Ravikant", "B"], ["Mahender", "B"], ["Sukindar", "B"]],
 };
 
+// Same person however it's spelled or capitalised (PARTH / Parth, Labhans / Lavhans…).
+const operatorKey = (name) => importKey(importOperatorName(name) || name);
+
 // [{ Name, Shift }] — employees fixed to this machine + the machine's listed
 // operators, one entry per name AND shift (the same person can work A or B).
 function operatorsForStage(stage) {
   const list = employeesForStage(stage).map((e) => ({ Name: e.Name, Shift: e.Shift || "A" }));
   (MACHINE_OPERATORS[stage] || []).forEach(([name, shift]) => {
-    const existing = store.employees.find((e) => importKey(e.Name) === importKey(name));
+    const existing = store.employees.find((e) => operatorKey(e.Name) === operatorKey(name));
     const use = existing ? existing.Name : name;
-    if (!list.some((x) => importKey(x.Name) === importKey(use) && x.Shift === shift)) list.push({ Name: use, Shift: shift });
+    if (!list.some((x) => operatorKey(x.Name) === operatorKey(use) && x.Shift === shift)) list.push({ Name: use, Shift: shift });
   });
-  return list.sort((a, b) => String(a.Name).localeCompare(String(b.Name)) || a.Shift.localeCompare(b.Shift));
+  // One tile per person (no shift shown). Someone listed on both shifts gets
+  // the shift matching the time of day: A by day (06:00-18:00), B by night.
+  const hour = new Date().getHours();
+  const preferred = hour >= 6 && hour < 18 ? "A" : "B";
+  const byName = {};
+  list.forEach((x) => {
+    const k = operatorKey(x.Name);
+    const cur = byName[k];
+    if (!cur) byName[k] = x;
+    else if (x.Shift === preferred && cur.Shift !== preferred) byName[k] = { Name: cur.Name, Shift: x.Shift }; // keep the first spelling
+  });
+  return Object.values(byName).sort((a, b) => String(a.Name).localeCompare(String(b.Name)));
 }
 
 function renderPartEmployeeStep() {
@@ -1327,7 +1341,7 @@ function renderPartEmployeeStep() {
   empGrid.innerHTML = employees.length
     ? employees.map((e) => {
         const selected = e.Name === wizState.employee && e.Shift === wizState.employeeShift ? "selected" : "";
-        return `<div class="kpi-card ${selected}" data-emp="${esc(e.Name)}" data-shift="${esc(e.Shift)}">${esc(employeeLabel(e.Name))}<small>${t("wizard.shiftLabel", { shift: e.Shift })}</small></div>`;
+        return `<div class="kpi-card ${selected}" data-emp="${esc(e.Name)}" data-shift="${esc(e.Shift)}">${esc(employeeLabel(e.Name))}</div>`;
       }).join("")
     : `<p>${t("wizard.noEmployeesAssigned", { stage: machineLabel(wizState.stage || "") })}</p>`;
   empGrid.querySelectorAll(".kpi-card").forEach((card) =>
