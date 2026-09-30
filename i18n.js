@@ -202,6 +202,7 @@ const TRANSLATIONS = {
     "wizard.dieSearchPlaceholder": "Search die number (e.g. 288)",
     "wizard.shiftLabel": "Shift {shift}",
     "wizard.partSearchPlaceholder": "Search plate name",
+    "wizard.newPlate": "New plate",
     "wizard.addPlateButton": "Add",
     "wizard.otherPlateNeeded": "Enter the plate name.",
     "wizard.otherDieIdLabel": "Die ID",

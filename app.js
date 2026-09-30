@@ -1229,6 +1229,7 @@ function partCardForStage(p, stage) {
 // Plate step: search among this die's plates, and "Other…" for a plate that
 // isn't there yet — only the plate name is typed, the Part ID is generated.
 let partOtherMode = false;
+const NEW_PART_PREFIX = "NEW:"; // pseudo Part ID of a plate name not yet created for this die
 
 function resetPartSearch() {
   partOtherMode = false;
@@ -1311,12 +1312,21 @@ function renderPartEmployeeStep() {
   const partGrid = $("part-grid");
   const pq = importKey($("part-search").value);
   const shown = parts.filter((p) => !pq || importKey(p.name).includes(pq) || importKey(p.part_id).includes(pq));
+  // Every known plate name this die doesn't have yet is offered too; its Part
+  // ID is only created when Setup Start is pressed (see the Start handler).
+  const have = new Set(parts.map((p) => importKey(p.name)));
+  const suggestions = PLATE_NAMES.filter((n) => !have.has(importKey(n)) && (!pq || importKey(n).includes(pq)));
   $("part-other-wrap").hidden = !partOtherMode;
   partGrid.innerHTML = shown.map((p) => {
     const { label, cls, clickable } = partCardForStage(p, wizState.stage);
     const selected = p.part_id === wizState.partId ? "selected" : "";
     return `<div class="kpi-card ${cls} ${clickable ? "" : "disabled"} ${selected}" data-part="${esc(p.part_id)}" data-clickable="${clickable}">
       ${esc(p.name)}<small>${esc(p.part_id)}</small><small>${esc(label)}</small>
+    </div>`;
+  }).join("") + suggestions.map((n) => {
+    const id = NEW_PART_PREFIX + n;
+    return `<div class="kpi-card pending ${id === wizState.partId ? "selected" : ""}" data-part="${esc(id)}" data-clickable="true">
+      ${esc(n)}<small>${t("wizard.newPlate")}</small><small>${t("wizard.pending")}</small>
     </div>`;
   }).join("") +
     `<div class="kpi-card other-tile ${partOtherMode ? "selected" : ""}" data-part="${OTHER_STAGE_VALUE}" data-clickable="true">${t("common.other")}</div>`;
@@ -1363,9 +1373,13 @@ ssStartBtn.addEventListener("click", async () => {
       const listed = operatorsForStage(wizState.stage).find((x) => x.Name === wizState.employee);
       createEmployee(wizState.employee, wizState.employeeShift || (listed && listed.Shift) || "A", wizState.stage);
     }
+    let partId = wizState.partId;
+    if (partId.startsWith(NEW_PART_PREFIX)) {
+      partId = addPartsBulk(wizState.toolId, [partId.slice(NEW_PART_PREFIX.length)])[0].PartId;
+    }
     const op = await startOperation({
       toolId: wizState.toolId,
-      partId: wizState.partId,
+      partId,
       stage: wizState.stage,
       operator: wizState.employee,
       shift: wizState.employeeShift,

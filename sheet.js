@@ -45,20 +45,23 @@ const STAGE_NAME_HI = {
 };
 
 const SHIFTS = ["A", "B"];
-// The first nine mirror models.py; the rest are the plate/part names used in
-// the workshop's September 2026 work log, spelling variants merged (BOTTAM/
-// BOTTEM -> BOTTOM, STRIPPEER -> STRIPPER, ...) and with the extra words
-// stripped (M\C, SIZE, SETTING, RE-WORK, -1/-2) — names only, no descriptions.
+// The first nine mirror models.py; the rest are the unique plate names in the
+// "Tool Name / Description" column of the September 2026 work log — spelling
+// variants merged (BOTTAM/BOTTEM -> BOTTOM, STRIPPEER -> STRIPPER, GUIDER ->
+// GUIDE, ...) and the extra words stripped (M\C, SIZE, SETTING, RE-WORK, -1/-2).
+// Names only, no descriptions; names too garbled to be sure of are left out.
 const PLATE_NAMES = [
   "TOP PLATE", "BOTTOM PLATE", "DIE PLATE", "PUNCH HOLDER",
   "PUNCH BACK PLATE", "STRIPPER PLATE", "STRIPPER BACK PLATE",
   "WIRE CUT PUNCH", "INSERT",
-  "DIE BACK PLATE", "DIE INSERT", "PUNCH", "STRIPPER INSERT", "STRIP GUIDE",
-  "GUIDE BLOCK", "PARALLEL BLOCK", "TOP SPACER", "PACKING PLATE", "BUFFER PLATE",
-  "BASE PLATE", "BENDING DIE", "BENDING PUNCH", "BENDING INSERT", "CUTTING PUNCH",
-  "LANCING PUNCH", "PILOT PUNCH", "PILOT PIN", "HIT PUNCH", "EMBOSSING DIE",
-  "EMBOSSING PUNCH", "EXTRUSION PUNCH", "SLOT WEDGE", "SLOT WEDGE PUNCH", "LIFTER",
-  "LINER", "CAM", "COLLAPSIBLE PLATE", "ELECTRODE", "TOOL HOLDER", "SLEEVE", "BUSH",
+  "DIE BACK PLATE", "DIE INSERT", "DIE BLANK PLATE", "DIE PUNCH", "PUNCH",
+  "STRIPPER INSERT", "STRIP GUIDE", "STRIP BLOCK", "GUIDE BLOCK", "PARALLEL BLOCK",
+  "TOP SPACER", "PACKING PLATE", "BUFFER", "BASE PLATE",
+  "BENDING DIE", "BENDING PUNCH", "BENDING INSERT", "BENDING PIN",
+  "CUTTING PUNCH", "LANCING PUNCH", "PILOT PUNCH", "PILOT PIN", "HIT PUNCH",
+  "EMBOSSING DIE", "EMBOSSING PUNCH", "EXTRUSION PUNCH", "PART OFF INSERT",
+  "SLOT WEDGE", "SLOT WEDGE PUNCH", "LIFTER", "LIFTER PUNCH", "LINER", "CAM",
+  "COLLAPSIBLE PLATE", "ELECTRODE", "TOOL HOLDER", "SLEEVE", "BUSH",
   "WASHER", "DOWEL PIN", "SHOULDER BOLT", "WELDING FIXTURE",
 ];
 
